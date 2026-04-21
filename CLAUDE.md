@@ -71,4 +71,4 @@ uv run python scripts/smoke_llm.py   # qwen-plus tool-use 冒烟测试
 - 存储只有 SQLite（仅交易数据） + 文件系统（md）；**无向量库、无 trace 表**
 - 知识分层：交易→DB / 商品→`knowledge/products/P*.md` / 政策→`knowledge/policies.md` / 记忆→`memory/sessions/{user_id}/*.md`
 - 种子数据全量写死：2 用户 / 3 商品 / 10 订单（含 3 条异常）
-- 工具预算 6 个：`query_orders` / `track_logistics` / `initiate_refund` / `query_product` / `query_policy` / `escalate_to_human`
+- 工具预算 5 个：`query_orders` / `initiate_refund` / `query_product` / `query_policy` / `escalate_to_human`

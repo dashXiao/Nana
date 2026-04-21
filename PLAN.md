@@ -18,6 +18,7 @@
   - 2026-04-21 **移除观测性与 trace 系统**（原 M8 / M9）：不落 trace 表、不做 Cost/Latency 运行期观测；评测阶段在 eval harness 现场记录即可。模块总数 9 → 7
   - 2026-04-21 种子数据极简化：商品 10 → **3**、用户 5–8 → **2**、订单 20 → **10**；seed.py 全量写死、无随机
   - 2026-04-21 工具 `query_order(user_id, order_id)` → **`query_orders(user_id)`**：用户不记订单号才是真实场景；入参不含 `order_id`，架构上消除跨用户枚举路径
+  - 2026-04-21 砍掉 `track_logistics` 工具：`query_orders` 已返回 status + shipped_at + days_since_shipped，物流追踪所需数据全在其中，再加一个工具只是对同一数据做自然语言包装；工具预算 6 → **5**
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -130,12 +131,11 @@ turn_count: 12
 进度标记：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 完成
 
 - [ ] **M1 · ReAct 循环**：自研，内存中维护 Thought/Action/Observation 链（不持久化）
-- [ ] **M2 · 工具层（6 个）**：**遵循 OpenAI function calling 规范**
+- [ ] **M2 · 工具层（5 个）**：**遵循 OpenAI function calling 规范**
   - 每个工具提供标准 `{"type":"function","function":{"name","description","parameters":<JSON Schema>}}` 定义
   - 返回体统一为 JSON-serializable dict；错误用 `{"ok": false, "error_code", "message"}` 形态回传给 LLM
   - 用 Pydantic 校验入参，但对 LLM 暴露的 schema 以 OpenAI function calling 为准
   - [x] `query_orders(user_id)` 订单列表查询：返回当前用户全部订单（入参不含 order_id，架构上消除越权面）
-  - [ ] `track_logistics` 物流追踪（基于 status + shipped_at 计算 days_since_shipped）
   - [ ] `initiate_refund(user_id, order_id)` 退换货发起（工具层鉴权示范点：user_id 必须匹配订单归属）
   - [ ] `query_product(product_ids)` 商品信息查询：DB 交易数据 + md 完整描述，支持多 ID 天然适配对比场景
   - [ ] `query_policy()` 政策查询：无参，返回整个 `policies.md` 文件
@@ -191,7 +191,7 @@ nana-agent/
 ├── agent/
 │   ├── core.py              # ReAct 循环
 │   ├── router.py            # 意图路由
-│   ├── tools/               # 6 个工具，一工具一文件；OpenAI function calling schema
+│   ├── tools/               # 5 个工具，一工具一文件；OpenAI function calling schema
 │   ├── memory/
 │   │   ├── short_term.py    # 滚动窗口 + 上下文压缩
 │   │   └── long_term.py     # per-session 摘要读写
@@ -226,7 +226,7 @@ nana-agent/
 | 周 | 目标 | 状态 |
 |---|---|---|
 | **W1** | DB Schema + seed 脚本 + ReAct 循环 + 2 个工具（OpenAI function calling schema） | [ ] 未开始 |
-| **W2** | 补齐 6 个工具 + 两层记忆（短期滚动窗口 + 长期 md 摘要） | [ ] |
+| **W2** | 补齐 5 个工具 + 两层记忆（短期滚动窗口 + 长期 md 摘要） | [ ] |
 | **W3** | 知识检索（catalog 注入 + `query_product` / `query_policy`） + 意图路由 + qwen-plus 接入 | [ ] |
 | **W4** | 护栏（工具层鉴权 + 注入过滤）+ 情绪感知 | [ ] |
 | **W5** | 评估体系（评测集 + 自动指标 + Judge + 消融 + 红队） | [ ] |
@@ -286,6 +286,7 @@ nana-agent/
 | 2026-04-21 | 移除 M8 可观测性 / M9 成本分析，不落 trace 表 | 简化开发聚焦 Agent 核心；评测阶段由 eval harness 现场采集 latency/token/cost 已足够，运行期全量 trace 系统 ROI 低 |
 | 2026-04-21 | 种子数据极简：3 商品 / 2 用户 / 10 订单全部写死，取消 md→DB 同步 | 规模极小且几乎不变，写死最省心；同步逻辑与随机生成都是伪复杂度；md 继续作为商品描述的唯一事实源 |
 | 2026-04-21 | `query_order(user_id, order_id)` → `query_orders(user_id)` | 客服真实场景下用户不记订单号；去掉 `order_id` 入参后跨用户枚举路径在架构上直接消失，越权防御示范迁移到 `initiate_refund` 更合适 |
+| 2026-04-21 | 砍掉 `track_logistics`，工具 6 → 5 | `query_orders` 已返回 status + shipped_at + days_since_shipped，物流追踪没有新增数据，仅是 LLM 侧的语言包装——LLM 自己能做，额外工具是非必要设计 |
 
 ---
 
