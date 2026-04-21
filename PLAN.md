@@ -3,7 +3,7 @@
 > **本文件是项目的单一事实来源（Single Source of Truth）**
 > 每次开始工作前先读它；每次有新决策/进展立刻更新它。
 
-- **Last updated**: 2026-04-20
+- **Last updated**: 2026-04-21
 - **Current phase**: 规划完成，准备进入 W1
 - **Changelog**:
   - 2026-04-20 初稿
@@ -14,6 +14,8 @@
   - 2026-04-20 记忆系统简化：去掉语义记忆层；长期记忆用 md 文件存 per-session 摘要（`memory/sessions/{user_id}/*.md`），不再进 DB；Chroma 彻底移除
   - 2026-04-20 去除状态机模块；退货流程改为 Prompt 引导 + 工具层鉴权；模块总数 10 → 9
   - 2026-04-20 `query_policy` 简化为无参整文件返回；控制 policies.md 体积在可接受范围
+  - 2026-04-21 工具 schema 统一遵循 **OpenAI function calling** 规范（入参/出参/错误形态）
+  - 2026-04-21 **移除观测性与 trace 系统**（原 M8 / M9）：不落 trace 表、不做 Cost/Latency 运行期观测；评测阶段在 eval harness 现场记录即可。模块总数 9 → 7
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -34,13 +36,14 @@
 
 | 维度 | 选型 | 备注 |
 |---|---|---|
-| LLM | MiniMax（OpenAI 兼容接口） | 单模型，不做路由切换 |
+| LLM | **qwen-plus**（OpenAI 兼容接口） | 单模型，不做路由切换 |
+| 工具协议 | **OpenAI function calling** | 所有工具 schema 与错误返回统一此规范，便于跨 LLM 复用 |
 | 框架 | 自研 ReAct + Tool-use 循环 | 不用 LangGraph / LangChain |
-| 结构化存储 | SQLite（仅交易 + traces） | 无 Redis；所有状态落库，支持回放 |
+| 结构化存储 | SQLite（仅交易数据） | 无 Redis；不落运行期 trace |
 | 非结构化存储 | 文件系统（md 文件） | 商品描述、政策、记忆摘要都用 md |
 | 向量存储 | ❌ 不使用 | 经过评估：数据规模 < 15K tokens + 记忆需求任务导向，向量检索过度工程化 |
 | 后端 | Python + FastAPI | |
-| 观测 | 自建 trace → SQLite trace 表 | |
+| 观测 | ❌ 不做运行期 trace | 评测阶段由 eval harness 现场统计 latency / token / cost |
 | 前端 | 暂无，W6 后补 Gradio | |
 
 ---
@@ -48,7 +51,7 @@
 ## 3. Domain 数据模型（极简，分层存储）
 
 **存储原则**：
-- **DB = "要算的、要变的、要 join 的"** → 交易数据 + traces
+- **DB = "要算的、要变的、要 join 的"** → 交易数据
 - **文件 = "要读的、要人看的、要版本化的"** → 商品描述 / 政策 / 记忆摘要
 
 所有"个性化"来自 Agent 记忆，不来自预设标签。
@@ -120,12 +123,15 @@ turn_count: 12
 
 ---
 
-## 4. Agent 核心能力（9 个模块）
+## 4. Agent 核心能力（7 个模块）
 
 进度标记：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 完成
 
-- [ ] **M1 · ReAct 循环**：自研，完整 Thought/Action/Observation trace
-- [ ] **M2 · 工具层（6 个）**：Pydantic schema，按生产级 API 设计
+- [ ] **M1 · ReAct 循环**：自研，内存中维护 Thought/Action/Observation 链（不持久化）
+- [ ] **M2 · 工具层（6 个）**：**遵循 OpenAI function calling 规范**
+  - 每个工具提供标准 `{"type":"function","function":{"name","description","parameters":<JSON Schema>}}` 定义
+  - 返回体统一为 JSON-serializable dict；错误用 `{"ok": false, "error_code", "message"}` 形态回传给 LLM
+  - 用 Pydantic 校验入参，但对 LLM 暴露的 schema 以 OpenAI function calling 为准
   - [ ] `query_order` 订单查询
   - [ ] `track_logistics` 物流追踪（基于 status + shipped_at 计算 days_since_shipped）
   - [ ] `initiate_refund` 退换货发起
@@ -140,15 +146,13 @@ turn_count: 12
   - [ ] 商品：LLM 从 catalog 挑 product_ids → `query_product(ids)` 全量加载完整 md
   - [ ] 政策：`query_policy()` 按需返回整个 `policies.md`（不切分 section）
   - [ ] 护栏约束：政策类问题必须走 `query_policy`，禁止 LLM 臆造
-- [ ] **M5 · 意图路由**：轻量分类 → 派发，简化但要 trace
+- [ ] **M5 · 意图路由**：轻量分类 → 派发
 - [ ] **M6 · 护栏（分层防御）**
   - [ ] 工具层鉴权：`query_order` / `initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截
   - [ ] Prompt 注入过滤
   - [ ] 关键信息（价格/库存/政策）禁止 LLM 臆造，必须走工具
   - [ ] 退货流程安全点不靠 FSM，由 system prompt 引导（必须确认才执行）+ 工具层鉴权双层兜底
 - [ ] **M7 · 情绪感知 + 升级**：检测负面情绪 → 自动 `escalate_to_human`
-- [ ] **M8 · 可观测性**：每 session 一条可回放 trace（工具/token/latency）
-- [ ] **M9 · 成本分析**：Token/Session、Cost/Session 指标化
 
 ---
 
@@ -162,13 +166,13 @@ turn_count: 12
   - [ ] 老客复购（长期记忆 + 跨会话召回，"我上次买的那款现在发货没"）
   - [ ] 恶意用户（护栏：越权查/退订单、Prompt 注入）
   - 每条样本含：输入对话、期望工具调用序列、期望信息点、禁止行为
-- [ ] **E2 · 自动指标**
+- [ ] **E2 · 自动指标**（由 eval harness 现场统计，不依赖运行期 trace）
   - [ ] Task Success Rate
   - [ ] Tool Call Accuracy（顺序 + 参数）
   - [ ] Faithfulness（政策/商品类回答是否基于文档）
   - [ ] Latency P50 / P95
   - [ ] Tokens / Cost per session
-- [ ] **E3 · LLM-as-Judge**：MiniMax 自打分，三维度（helpfulness/tone/policy），多次采样取均值
+- [ ] **E3 · LLM-as-Judge**：qwen-plus 自打分，三维度（helpfulness/tone/policy），多次采样取均值
 - [ ] **E4 · 消融实验**
   - [ ] 记忆策略对比：无记忆 / 结构化摘要（本方案）/ 全量历史塞入
   - [ ] 知识检索策略对比：catalog+全量加载（本方案）/ 向量检索（实验对照）/ 全塞入
@@ -185,12 +189,11 @@ nana-agent/
 ├── agent/
 │   ├── core.py              # ReAct 循环
 │   ├── router.py            # 意图路由
-│   ├── tools/               # 6 个工具，一工具一文件
+│   ├── tools/               # 6 个工具，一工具一文件；OpenAI function calling schema
 │   ├── memory/
 │   │   ├── short_term.py    # 滚动窗口 + 上下文压缩
 │   │   └── long_term.py     # per-session 摘要读写
-│   ├── guardrails/          # 工具层鉴权 / 注入过滤 / 情绪
-│   └── tracing.py           # trace 落库
+│   └── guardrails/          # 工具层鉴权 / 注入过滤 / 情绪
 ├── knowledge/
 │   ├── policies.md          # 全站统一政策（退换货/配送/FAQ）
 │   └── products/            # 每商品一 md，文件名即 product_id
@@ -220,10 +223,10 @@ nana-agent/
 
 | 周 | 目标 | 状态 |
 |---|---|---|
-| **W1** | DB Schema + seed 脚本 + ReAct 循环 + 2 个工具 + trace 落库 | [ ] 未开始 |
+| **W1** | DB Schema + seed 脚本 + ReAct 循环 + 2 个工具（OpenAI function calling schema） | [ ] 未开始 |
 | **W2** | 补齐 6 个工具 + 两层记忆（短期滚动窗口 + 长期 md 摘要） | [ ] |
-| **W3** | 知识检索（catalog 注入 + `query_product` / `query_policy`） + 意图路由 + MiniMax 接入 | [ ] |
-| **W4** | 护栏（工具层鉴权 + 注入过滤）+ 情绪感知 + 观测 API | [ ] |
+| **W3** | 知识检索（catalog 注入 + `query_product` / `query_policy`） + 意图路由 + qwen-plus 接入 | [ ] |
+| **W4** | 护栏（工具层鉴权 + 注入过滤）+ 情绪感知 | [ ] |
 | **W5** | 评估体系（评测集 + 自动指标 + Judge + 消融 + 红队） | [ ] |
 | **W6** | Gradio Demo + Docker + README + 技术博客 | [ ] |
 
@@ -232,6 +235,7 @@ nana-agent/
 - **2026-04-20** · 完成规划，定稿技术栈与数据模型；创建 PLAN.md
 - **2026-04-20** · 检索与记忆架构重构：去 Chroma、去 RAG、去语义记忆；改为 "catalog + 全量加载" + per-session md 摘要；技术栈简化为"SQLite + 文件系统"
 - **2026-04-20** · 去除状态机模块；退货流程改为 Prompt 引导 + 工具层鉴权；整体架构从"10 模块"收敛到"9 模块"
+- **2026-04-21** · LLM 改为 **qwen-plus**；工具 schema 统一 **OpenAI function calling**；**移除运行期观测 & trace**（M8/M9 去除），架构收敛到 **7 模块**
 
 ---
 
@@ -241,12 +245,12 @@ nana-agent/
 - [ ] Docker 一键部署 + Gradio Demo
 - [ ] 技术博客：重点写「评估体系设计」和「记忆模块架构」
 - [ ] 简历要点：
-  - 自研 ReAct Agent 循环，支持 Trace 回放
+  - 自研 ReAct Agent 循环（Thought/Action/Observation），工具层遵循 **OpenAI function calling** 规范，跨 LLM 可插拔
   - **按领域特点裁剪架构**：经评估主动去除向量 RAG 与语义记忆（详述于设计文档），改用 catalog 索引 + 结构化摘要，消融实验数据支撑
   - 两层记忆架构（短期滚动窗口+压缩 / 长期 per-session md 摘要），跨会话个性化
   - **分层防御**：工具层鉴权（无论调用路径都拦截越权）+ Prompt 层约束（必须确认才执行敏感动作）
   - 80+ 样本评测体系（自动指标 + LLM Judge + 红队 + 四路消融）
-  - 单 session 成本 $X.XX，P95 延迟 X.Xs
+  - 评测报告：Task Success Rate XX%，单 session 成本 $X.XX，P95 延迟 X.Xs
 
 ---
 
@@ -256,7 +260,7 @@ nana-agent/
 
 | 日期 | 决策 | 理由 |
 |---|---|---|
-| 2026-04-20 | LLM 只用 MiniMax，不做多模型路由 | 聚焦 Agent 本身；单模型时改写简历为"Prompt 分层 + Tool schema 精简降 token" |
+| 2026-04-20 | LLM 只用 qwen-plus，不做多模型路由 | 聚焦 Agent 本身；单模型时改写简历为"Prompt 分层 + Tool schema 精简降 token" |
 | 2026-04-20 | 框架自研，不用 LangGraph / LangChain | 体现对原理的理解，面试可深入讲 |
 | 2026-04-20 | 去 Redis 缓存层 | 性能非目标；全量落库反而支持对话回放（变成亮点） |
 | 2026-04-20 | 去优惠券、VIP、用户分类 | 保持 domain 极简；所有"个性化"来自 Agent 记忆 |
@@ -274,16 +278,19 @@ nana-agent/
 | 2026-04-20 | 去除状态机模块，退货流程不强制 FSM | 资源有限，接受少量边界/恶意场景不覆盖；核心安全点（越权退款）改为**工具层鉴权**守住，防御能力不降反升（无论对话路径都拦得住） |
 | 2026-04-20 | 简历叙事：从"识别高风险流程用 FSM"改为"**分层防御**（工具是 security boundary）" | 符合当前 Agent 设计主流思路；强制型 FSM 反而牺牲灵活性 |
 | 2026-04-20 | `query_policy` 简化为无参整文件返回，不做 section 切分 | 控制文件体积在 < 2K tokens，直接整文件入上下文信息完整度最高；切分会人为制造 chunking 选择问题，复杂度不值 |
+| 2026-04-21 | 工具层统一 **OpenAI function calling** schema | 业界通用规范；便于后续切换任何 OpenAI 兼容 LLM；trace/debug 时格式统一 |
+| 2026-04-21 | 移除 M8 可观测性 / M9 成本分析，不落 trace 表 | 简化开发聚焦 Agent 核心；评测阶段由 eval harness 现场采集 latency/token/cost 已足够，运行期全量 trace 系统 ROI 低 |
 
 ---
 
 ## 10. 开放问题 / 下一步动作
 
 ### 立即（W1 起步）
-- [ ] 确定 SQLite schema DDL（users / products / orders / traces）
+- [ ] 确定 SQLite schema DDL（users / products / orders）
 - [ ] ReAct 循环核心数据结构（Message / Action / Observation / Step）
-- [ ] 第一个工具 `query_order` 的完整实现模板（schema + 错误码 + 工具层鉴权 + 测试）
-- [ ] MiniMax SDK 接入与最小调用 demo
+- [ ] 工具通用契约：**OpenAI function calling** schema 定义模板 + 统一错误返回形态
+- [ ] 第一个工具 `query_order` 的完整实现模板（function-calling schema + 错误码 + 工具层鉴权 + 测试）
+- [ ] qwen-plus SDK 接入与最小 tool-use 调用 demo
 
 ### 待定
 - [ ] 评测集具体场景细化（W5 之前敲定）
