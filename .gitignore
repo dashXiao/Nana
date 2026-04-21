@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv / venv
+.venv/
+venv/
+env/
+
+# env
+.env
+.env.local
+
+# DB
+db/*.db
+db/*.db-journal
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# logs / reports
+*.log
+eval/reports/*.json
+eval/reports/*.md
+
+# 会话记忆（本地产生，不入仓）
+memory/sessions/

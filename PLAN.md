@@ -4,7 +4,7 @@
 > 每次开始工作前先读它；每次有新决策/进展立刻更新它。
 
 - **Last updated**: 2026-04-21
-- **Current phase**: 规划完成，准备进入 W1
+- **Current phase**: W1 进行中（数据层已落地）
 - **Changelog**:
   - 2026-04-20 初稿
   - 2026-04-20 订单模型调整：加 `shipped_at` 字段；状态合并 `refunding/refunded → refunded`
@@ -16,6 +16,7 @@
   - 2026-04-20 `query_policy` 简化为无参整文件返回；控制 policies.md 体积在可接受范围
   - 2026-04-21 工具 schema 统一遵循 **OpenAI function calling** 规范（入参/出参/错误形态）
   - 2026-04-21 **移除观测性与 trace 系统**（原 M8 / M9）：不落 trace 表、不做 Cost/Latency 运行期观测；评测阶段在 eval harness 现场记录即可。模块总数 9 → 7
+  - 2026-04-21 种子数据极简化：商品 10 → **3**、用户 5–8 → **2**、订单 20 → **10**；seed.py 全量写死、无随机
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -59,15 +60,15 @@
 ### 3.1 交易层（SQLite）
 | 表 | 数量 | 字段 |
 |---|---|---|
-| users | 5–8 | `user_id`, `name` |
-| products | 10 | `product_id`, `name`, `price`, `stock` |
-| orders | 20 | `order_id`, `user_id`, `product_id`, `status`, `created_at`, `shipped_at` |
+| users | 2 | `user_id`, `name` |
+| products | 3 | `product_id`, `name`, `price`, `stock` |
+| orders | 10 | `order_id`, `user_id`, `product_id`, `status`, `created_at`, `shipped_at` |
 
 - 订单状态枚举：`pending / shipped / delivered / refunded`（`refunded` 即退款完成态；退货确认过程在对话层完成，不落独立过渡态）
 - `shipped_at`：nullable timestamp；`status >= shipped` 才有值。工具返回时实时算 `days_since_shipped`
-- `products.name` 不是独立录入，由 `scripts/seed.py` 从 md frontmatter 同步；md 是商品身份 + 描述的**唯一事实源**
-- 时间用相对偏移（`NOW - N days`）；`shipped_at = created_at + random(0–2 days)`
-- 故意埋 2–3 条异常订单（状态不一致、疑似丢件、发货很久未签收）压测 Agent 鲁棒性
+- 种子数据**全量写死**（无随机）；`seed.py` 直接维护三个商品的价格/库存，md 仅作商品身份/描述的唯一事实源（小规模下不强制同步）
+- 时间基于 `NOW - N days` 的固定偏移
+- 故意埋 3 条异常订单（O008 疑似丢件 / O009 状态不一致 / O010 久未发货），压测 Agent 鲁棒性
 
 ### 3.2 商品描述层（每商品一 md）
 路径：`knowledge/products/P001.md`、`P002.md`... 文件名即 `product_id`。
@@ -88,7 +89,7 @@ name: 无线蓝牙耳机 X1
 
 - Frontmatter 的 `product_id`、`name` 供 seed 脚本同步到 DB
 - Body 由 `query_product(product_ids)` 工具全量读取返回（不做 chunk / 向量）
-- 10 个 md 文件，覆盖几个典型品类即可
+- 3 个 md 文件（P001 耳机 / P002 手表 / P003 办公椅），覆盖典型数码+家具品类即可
 
 ### 3.3 政策层（单文件）
 路径：`knowledge/policies.md`，**全站共享**，不绑定商品。
@@ -142,7 +143,7 @@ turn_count: 12
   - [ ] 短期：滚动窗口 + 超阈值时触发上下文压缩（LLM 摘要近期对话）
   - [ ] 长期：per-session 结构化摘要，`memory/sessions/{user_id}/*.md`；新会话载入最近 3–5 条
 - [ ] **M4 · 知识检索策略**（非 RAG）
-  - [ ] Catalog 注入：system prompt 含全部 10 个商品的 ID / 名称 / 品类 / 简介（约 1K tokens）
+  - [ ] Catalog 注入：system prompt 含全部 3 个商品的 ID / 名称 / 品类 / 简介
   - [ ] 商品：LLM 从 catalog 挑 product_ids → `query_product(ids)` 全量加载完整 md
   - [ ] 政策：`query_policy()` 按需返回整个 `policies.md`（不切分 section）
   - [ ] 护栏约束：政策类问题必须走 `query_policy`，禁止 LLM 臆造
@@ -236,6 +237,7 @@ nana-agent/
 - **2026-04-20** · 检索与记忆架构重构：去 Chroma、去 RAG、去语义记忆；改为 "catalog + 全量加载" + per-session md 摘要；技术栈简化为"SQLite + 文件系统"
 - **2026-04-20** · 去除状态机模块；退货流程改为 Prompt 引导 + 工具层鉴权；整体架构从"10 模块"收敛到"9 模块"
 - **2026-04-21** · LLM 改为 **qwen-plus**；工具 schema 统一 **OpenAI function calling**；**移除运行期观测 & trace**（M8/M9 去除），架构收敛到 **7 模块**
+- **2026-04-21** · W1 数据层落地：uv 项目骨架 + SQLite DDL（users/products/orders）+ 3 商品 md + `policies.md` + `scripts/seed.py`；seed 跑通（**2 用户 / 3 商品 / 10 订单含 3 异常**，全量写死无随机）
 
 ---
 
@@ -269,7 +271,7 @@ nana-agent/
 | 2026-04-20 | 去掉 `recommend_products` 工具 | 推荐与电商客服核心诉求关联弱；聚焦查询/物流/退款/升级四类真实客服问题 |
 | 2026-04-20 | 知识三层分离：交易→DB / 商品描述→per-product md / 政策→统一单文件 | 按"变化频率 + 适用范围"切分，贴合真实系统；md 是商品唯一事实源，seed 脚本同步到 DB |
 | 2026-04-20 | 加回 `query_product` 工具 | 显式工具 + 多源融合（DB 交易数据 + md 描述）是结构化/非结构化知识融合的核心亮点 |
-| 2026-04-20 | 商品检索改为 "catalog + 全量加载"，不用向量 RAG | 10 商品 × 1K tokens 规模下向量检索过度工程化；catalog 方案天然支持多商品对比（"A 和 B 哪个好"），trace 更清晰 |
+| 2026-04-20 | 商品检索改为 "catalog + 全量加载"，不用向量 RAG | 小规模（少量商品 × ~1K tokens/条）下向量检索过度工程化；catalog 方案天然支持多商品对比（"A 和 B 哪个好"），trace 更清晰 |
 | 2026-04-20 | 政策改为整文档按需加载，不用向量 | 单文件小，chunk 反而破坏语义完整性 |
 | 2026-04-20 | 记忆系统：去语义记忆层，改两层（短期+长期摘要） | 电商客服任务导向、短 horizon，语义检索无用武之地；用结构化摘要更贴合场景 |
 | 2026-04-20 | 记忆摘要存为 md 文件，不进 DB | 内容是 LLM 生成的非结构化文本；md 可读、可版本化、与知识文件风格一致；规模下 `listdir` 排序足够当"查询" |
@@ -280,13 +282,15 @@ nana-agent/
 | 2026-04-20 | `query_policy` 简化为无参整文件返回，不做 section 切分 | 控制文件体积在 < 2K tokens，直接整文件入上下文信息完整度最高；切分会人为制造 chunking 选择问题，复杂度不值 |
 | 2026-04-21 | 工具层统一 **OpenAI function calling** schema | 业界通用规范；便于后续切换任何 OpenAI 兼容 LLM；trace/debug 时格式统一 |
 | 2026-04-21 | 移除 M8 可观测性 / M9 成本分析，不落 trace 表 | 简化开发聚焦 Agent 核心；评测阶段由 eval harness 现场采集 latency/token/cost 已足够，运行期全量 trace 系统 ROI 低 |
+| 2026-04-21 | 种子数据极简：3 商品 / 2 用户 / 10 订单全部写死，取消 md→DB 同步 | 规模极小且几乎不变，写死最省心；同步逻辑与随机生成都是伪复杂度；md 继续作为商品描述的唯一事实源 |
 
 ---
 
 ## 10. 开放问题 / 下一步动作
 
 ### 立即（W1 起步）
-- [ ] 确定 SQLite schema DDL（users / products / orders）
+- [x] 确定 SQLite schema DDL（users / products / orders）
+- [x] `scripts/seed.py`（md frontmatter → products 表，含 3 条异常订单）
 - [ ] ReAct 循环核心数据结构（Message / Action / Observation / Step）
 - [ ] 工具通用契约：**OpenAI function calling** schema 定义模板 + 统一错误返回形态
 - [ ] 第一个工具 `query_order` 的完整实现模板（function-calling schema + 错误码 + 工具层鉴权 + 测试）
