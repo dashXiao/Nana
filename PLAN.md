@@ -141,7 +141,7 @@ turn_count: 12
   - [x] `query_orders(user_id)` 订单列表查询：返回当前用户全部订单（入参不含 order_id，架构上消除越权面）
   - [x] `initiate_refund(user_id, order_id)` 退换货发起：NOT_FOUND / UNAUTHORIZED / INVALID_STATE 三道校验，越权由工具层硬挡
   - [ ] `query_product(product_ids)` 商品信息查询：DB 交易数据 + md 完整描述，支持多 ID 天然适配对比场景
-  - [ ] `query_policy()` 政策查询：无参，返回整个 `policies.md` 文件
+  - [x] `query_policy()` 政策查询：无参，返回整个 `policies.md` 文件
   - [ ] `escalate_to_human` 转人工
 - [ ] **M3 · 两层记忆**（简化自原三层）
   - [ ] 短期：滚动窗口 + 超阈值时触发上下文压缩（LLM 摘要近期对话）
@@ -245,6 +245,7 @@ nana-agent/
 - **2026-04-21** · W1 工具链起步：工具契约模板（`_contract.py`）+ qwen-plus client + tool-use 冒烟测试通过；第一工具 `query_orders(user_id)` 落地（10/10 pytest 全绿）
 - **2026-04-21** · W1 ReAct 循环骨架完成：`agent/core.py` + 5 个单元测试（含 user_id 覆盖哨卡、max_steps 熔断）+ `scripts/smoke_agent.py` 端到端跑通（qwen-plus 两轮收敛）
 - **2026-04-21** · W1 第二个工具 `initiate_refund(user_id, order_id)` 完成：NOT_FOUND → UNAUTHORIZED → INVALID_STATE 三道校验，越权由工具层硬挡（分层防御硬规则层）；9 个单测覆盖 3 状态正常路径 + 幂等 + 越权 + schema 不变式；全工程 24/24 绿
+- **2026-04-21** · `query_policy()` 落地：无参整文件返回 `knowledge/policies.md`；3 个单测覆盖内容/入参形态/零参数 schema；全工程 27/27 绿
 
 ---
 
