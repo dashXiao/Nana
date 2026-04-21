@@ -4,7 +4,7 @@
 > 每次开始工作前先读它；每次有新决策/进展立刻更新它。
 
 - **Last updated**: 2026-04-21
-- **Current phase**: W1 进行中（数据层已落地）
+- **Current phase**: W1 进行中（数据层 + 工具契约 + LLM 接入 + 第一工具完成）
 - **Changelog**:
   - 2026-04-20 初稿
   - 2026-04-20 订单模型调整：加 `shipped_at` 字段；状态合并 `refunding/refunded → refunded`
@@ -17,6 +17,7 @@
   - 2026-04-21 工具 schema 统一遵循 **OpenAI function calling** 规范（入参/出参/错误形态）
   - 2026-04-21 **移除观测性与 trace 系统**（原 M8 / M9）：不落 trace 表、不做 Cost/Latency 运行期观测；评测阶段在 eval harness 现场记录即可。模块总数 9 → 7
   - 2026-04-21 种子数据极简化：商品 10 → **3**、用户 5–8 → **2**、订单 20 → **10**；seed.py 全量写死、无随机
+  - 2026-04-21 工具 `query_order(user_id, order_id)` → **`query_orders(user_id)`**：用户不记订单号才是真实场景；入参不含 `order_id`，架构上消除跨用户枚举路径
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -133,9 +134,9 @@ turn_count: 12
   - 每个工具提供标准 `{"type":"function","function":{"name","description","parameters":<JSON Schema>}}` 定义
   - 返回体统一为 JSON-serializable dict；错误用 `{"ok": false, "error_code", "message"}` 形态回传给 LLM
   - 用 Pydantic 校验入参，但对 LLM 暴露的 schema 以 OpenAI function calling 为准
-  - [ ] `query_order` 订单查询
+  - [x] `query_orders(user_id)` 订单列表查询：返回当前用户全部订单（入参不含 order_id，架构上消除越权面）
   - [ ] `track_logistics` 物流追踪（基于 status + shipped_at 计算 days_since_shipped）
-  - [ ] `initiate_refund` 退换货发起
+  - [ ] `initiate_refund(user_id, order_id)` 退换货发起（工具层鉴权示范点：user_id 必须匹配订单归属）
   - [ ] `query_product(product_ids)` 商品信息查询：DB 交易数据 + md 完整描述，支持多 ID 天然适配对比场景
   - [ ] `query_policy()` 政策查询：无参，返回整个 `policies.md` 文件
   - [ ] `escalate_to_human` 转人工
@@ -149,7 +150,7 @@ turn_count: 12
   - [ ] 护栏约束：政策类问题必须走 `query_policy`，禁止 LLM 臆造
 - [ ] **M5 · 意图路由**：轻量分类 → 派发
 - [ ] **M6 · 护栏（分层防御）**
-  - [ ] 工具层鉴权：`query_order` / `initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截
+  - [ ] 工具层鉴权：`initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截（`query_orders` 因入参不含 order_id，已在架构上消除越权面）
   - [ ] Prompt 注入过滤
   - [ ] 关键信息（价格/库存/政策）禁止 LLM 臆造，必须走工具
   - [ ] 退货流程安全点不靠 FSM，由 system prompt 引导（必须确认才执行）+ 工具层鉴权双层兜底
@@ -238,6 +239,7 @@ nana-agent/
 - **2026-04-20** · 去除状态机模块；退货流程改为 Prompt 引导 + 工具层鉴权；整体架构从"10 模块"收敛到"9 模块"
 - **2026-04-21** · LLM 改为 **qwen-plus**；工具 schema 统一 **OpenAI function calling**；**移除运行期观测 & trace**（M8/M9 去除），架构收敛到 **7 模块**
 - **2026-04-21** · W1 数据层落地：uv 项目骨架 + SQLite DDL（users/products/orders）+ 3 商品 md + `policies.md` + `scripts/seed.py`；seed 跑通（**2 用户 / 3 商品 / 10 订单含 3 异常**，全量写死无随机）
+- **2026-04-21** · W1 工具链起步：工具契约模板（`_contract.py`）+ qwen-plus client + tool-use 冒烟测试通过；第一工具 `query_orders(user_id)` 落地（10/10 pytest 全绿）
 
 ---
 
@@ -283,6 +285,7 @@ nana-agent/
 | 2026-04-21 | 工具层统一 **OpenAI function calling** schema | 业界通用规范；便于后续切换任何 OpenAI 兼容 LLM；trace/debug 时格式统一 |
 | 2026-04-21 | 移除 M8 可观测性 / M9 成本分析，不落 trace 表 | 简化开发聚焦 Agent 核心；评测阶段由 eval harness 现场采集 latency/token/cost 已足够，运行期全量 trace 系统 ROI 低 |
 | 2026-04-21 | 种子数据极简：3 商品 / 2 用户 / 10 订单全部写死，取消 md→DB 同步 | 规模极小且几乎不变，写死最省心；同步逻辑与随机生成都是伪复杂度；md 继续作为商品描述的唯一事实源 |
+| 2026-04-21 | `query_order(user_id, order_id)` → `query_orders(user_id)` | 客服真实场景下用户不记订单号；去掉 `order_id` 入参后跨用户枚举路径在架构上直接消失，越权防御示范迁移到 `initiate_refund` 更合适 |
 
 ---
 
@@ -293,8 +296,9 @@ nana-agent/
 - [x] `scripts/seed.py`（md frontmatter → products 表，含 3 条异常订单）
 - [ ] ReAct 循环核心数据结构（Message / Action / Observation / Step）
 - [ ] 工具通用契约：**OpenAI function calling** schema 定义模板 + 统一错误返回形态
-- [ ] 第一个工具 `query_order` 的完整实现模板（function-calling schema + 错误码 + 工具层鉴权 + 测试）
-- [ ] qwen-plus SDK 接入与最小 tool-use 调用 demo
+- [x] 工具通用契约：OpenAI function calling schema 模板 + 统一错误返回形态（`agent/tools/_contract.py`）
+- [x] qwen-plus SDK 接入（`agent/llm.py`）+ 最小 tool-use demo（`scripts/smoke_llm.py`）
+- [x] 第一个工具 `query_orders`（含 Pydantic 入参、NOT_FOUND/INVALID_INPUT 错误码、10 个 pytest 用例）
 
 ### 待定
 - [ ] 评测集具体场景细化（W5 之前敲定）
