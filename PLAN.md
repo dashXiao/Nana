@@ -4,7 +4,7 @@
 > 每次开始工作前先读它；每次有新决策/进展立刻更新它。
 
 - **Last updated**: 2026-04-21
-- **Current phase**: W1 进行中（数据层 + 工具契约 + LLM 接入 + 第一工具 + ReAct 循环骨架完成）
+- **Current phase**: W1 进行中（数据层 + 工具契约 + LLM 接入 + ReAct 循环骨架 + 2 个工具完成）
 - **Changelog**:
   - 2026-04-20 初稿
   - 2026-04-20 订单模型调整：加 `shipped_at` 字段；状态合并 `refunding/refunded → refunded`
@@ -139,7 +139,7 @@ turn_count: 12
   - 返回体统一为 JSON-serializable dict；错误用 `{"ok": false, "error_code", "message"}` 形态回传给 LLM
   - 用 Pydantic 校验入参，但对 LLM 暴露的 schema 以 OpenAI function calling 为准
   - [x] `query_orders(user_id)` 订单列表查询：返回当前用户全部订单（入参不含 order_id，架构上消除越权面）
-  - [ ] `initiate_refund(user_id, order_id)` 退换货发起（工具层鉴权示范点：user_id 必须匹配订单归属）
+  - [x] `initiate_refund(user_id, order_id)` 退换货发起：NOT_FOUND / UNAUTHORIZED / INVALID_STATE 三道校验，越权由工具层硬挡
   - [ ] `query_product(product_ids)` 商品信息查询：DB 交易数据 + md 完整描述，支持多 ID 天然适配对比场景
   - [ ] `query_policy()` 政策查询：无参，返回整个 `policies.md` 文件
   - [ ] `escalate_to_human` 转人工
@@ -244,6 +244,7 @@ nana-agent/
 - **2026-04-21** · W1 数据层落地：uv 项目骨架 + SQLite DDL（users/products/orders）+ 3 商品 md + `policies.md` + `scripts/seed.py`；seed 跑通（**2 用户 / 3 商品 / 10 订单含 3 异常**，全量写死无随机）
 - **2026-04-21** · W1 工具链起步：工具契约模板（`_contract.py`）+ qwen-plus client + tool-use 冒烟测试通过；第一工具 `query_orders(user_id)` 落地（10/10 pytest 全绿）
 - **2026-04-21** · W1 ReAct 循环骨架完成：`agent/core.py` + 5 个单元测试（含 user_id 覆盖哨卡、max_steps 熔断）+ `scripts/smoke_agent.py` 端到端跑通（qwen-plus 两轮收敛）
+- **2026-04-21** · W1 第二个工具 `initiate_refund(user_id, order_id)` 完成：NOT_FOUND → UNAUTHORIZED → INVALID_STATE 三道校验，越权由工具层硬挡（分层防御硬规则层）；9 个单测覆盖 3 状态正常路径 + 幂等 + 越权 + schema 不变式；全工程 24/24 绿
 
 ---
 
