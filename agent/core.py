@@ -73,9 +73,12 @@ class Agent:
         user_id: str | None = None,
         history: list[dict] | None = None,
     ) -> RunResult:
-        messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
+        # history 常见来源是上一轮 run() 返回的 messages，里面已经含 system——
+        # 此时直接沿用，避免重复注入；否则才自己造一个 system
         if history:
-            messages.extend(history)
+            messages = list(history)
+        else:
+            messages = [{"role": "system", "content": self.system_prompt}]
         messages.append({"role": "user", "content": user_message})
 
         steps: list[Step] = []

@@ -152,6 +152,33 @@ def test_no_tool_call_returns_immediately():
     assert result.steps[0].invocations == []
 
 
+def test_history_with_system_is_not_duplicated():
+    """多轮：传入含 system 的 history，不得再重复注入一条 system。"""
+    prior_history = [
+        {"role": "system", "content": "ORIGINAL"},
+        {"role": "user", "content": "第一轮问题"},
+        {"role": "assistant", "content": "第一轮答复"},
+    ]
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["messages"] = list(messages)
+        return _fake_resp(_FakeMsg(content="第二轮答复"))
+
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="NEW_SYSTEM_SHOULD_NOT_APPEAR",
+        chat_fn=capturing_chat,
+    )
+    agent.run("第二轮问题", user_id="U001", history=prior_history)
+
+    sent = captured["messages"]
+    systems = [m for m in sent if m.get("role") == "system"]
+    assert len(systems) == 1
+    # 沿用 history 里的 system，而不是覆盖成新的
+    assert systems[0]["content"] == "ORIGINAL"
+
+
 def test_malformed_arguments_dispatched_as_invalid_input():
     """LLM 给出非法 JSON arguments 时，dispatch 应返回 INVALID_INPUT 而非抛异常。"""
     scripted = [
