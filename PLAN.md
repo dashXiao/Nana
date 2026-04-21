@@ -4,7 +4,7 @@
 > 每次开始工作前先读它；每次有新决策/进展立刻更新它。
 
 - **Last updated**: 2026-04-21
-- **Current phase**: W1 进行中（数据层 + 工具契约 + LLM 接入 + 第一工具完成）
+- **Current phase**: W1 进行中（数据层 + 工具契约 + LLM 接入 + 第一工具 + ReAct 循环骨架完成）
 - **Changelog**:
   - 2026-04-20 初稿
   - 2026-04-20 订单模型调整：加 `shipped_at` 字段；状态合并 `refunding/refunded → refunded`
@@ -130,7 +130,10 @@ turn_count: 12
 
 进度标记：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 完成
 
-- [ ] **M1 · ReAct 循环**：自研，内存中维护 Thought/Action/Observation 链（不持久化）
+- [x] **M1 · ReAct 循环**：自研，内存中维护 Thought/Action/Observation 链（不持久化）
+  - [x] 数据结构：`Step` / `ToolInvocation` / `RunResult`
+  - [x] 循环调度 + `max_steps` 熔断
+  - [x] session 上下文硬覆盖：派发前强制把 `user_id` 改为会话归属，阻断 LLM 伪造
 - [ ] **M2 · 工具层（5 个）**：**遵循 OpenAI function calling 规范**
   - 每个工具提供标准 `{"type":"function","function":{"name","description","parameters":<JSON Schema>}}` 定义
   - 返回体统一为 JSON-serializable dict；错误用 `{"ok": false, "error_code", "message"}` 形态回传给 LLM
@@ -240,6 +243,7 @@ nana-agent/
 - **2026-04-21** · LLM 改为 **qwen-plus**；工具 schema 统一 **OpenAI function calling**；**移除运行期观测 & trace**（M8/M9 去除），架构收敛到 **7 模块**
 - **2026-04-21** · W1 数据层落地：uv 项目骨架 + SQLite DDL（users/products/orders）+ 3 商品 md + `policies.md` + `scripts/seed.py`；seed 跑通（**2 用户 / 3 商品 / 10 订单含 3 异常**，全量写死无随机）
 - **2026-04-21** · W1 工具链起步：工具契约模板（`_contract.py`）+ qwen-plus client + tool-use 冒烟测试通过；第一工具 `query_orders(user_id)` 落地（10/10 pytest 全绿）
+- **2026-04-21** · W1 ReAct 循环骨架完成：`agent/core.py` + 5 个单元测试（含 user_id 覆盖哨卡、max_steps 熔断）+ `scripts/smoke_agent.py` 端到端跑通（qwen-plus 两轮收敛）
 
 ---
 
@@ -287,6 +291,7 @@ nana-agent/
 | 2026-04-21 | 种子数据极简：3 商品 / 2 用户 / 10 订单全部写死，取消 md→DB 同步 | 规模极小且几乎不变，写死最省心；同步逻辑与随机生成都是伪复杂度；md 继续作为商品描述的唯一事实源 |
 | 2026-04-21 | `query_order(user_id, order_id)` → `query_orders(user_id)` | 客服真实场景下用户不记订单号；去掉 `order_id` 入参后跨用户枚举路径在架构上直接消失，越权防御示范迁移到 `initiate_refund` 更合适 |
 | 2026-04-21 | 砍掉 `track_logistics`，工具 6 → 5 | `query_orders` 已返回 status + shipped_at + days_since_shipped，物流追踪没有新增数据，仅是 LLM 侧的语言包装——LLM 自己能做，额外工具是非必要设计 |
+| 2026-04-21 | ReAct 循环在派发前硬覆盖 tool_call 的 `user_id` | session 上下文不应交给 LLM 决定；放在循环入口覆盖，任何工具都自动受益，且不需要每个工具各自防御；与未来工具层鉴权形成分层防御 |
 
 ---
 
@@ -295,11 +300,11 @@ nana-agent/
 ### 立即（W1 起步）
 - [x] 确定 SQLite schema DDL（users / products / orders）
 - [x] `scripts/seed.py`（md frontmatter → products 表，含 3 条异常订单）
-- [ ] ReAct 循环核心数据结构（Message / Action / Observation / Step）
-- [ ] 工具通用契约：**OpenAI function calling** schema 定义模板 + 统一错误返回形态
+- [x] ReAct 循环核心数据结构（`Step` / `ToolInvocation` / `RunResult`，`agent/core.py`）
 - [x] 工具通用契约：OpenAI function calling schema 模板 + 统一错误返回形态（`agent/tools/_contract.py`）
 - [x] qwen-plus SDK 接入（`agent/llm.py`）+ 最小 tool-use demo（`scripts/smoke_llm.py`）
 - [x] 第一个工具 `query_orders`（含 Pydantic 入参、NOT_FOUND/INVALID_INPUT 错误码、10 个 pytest 用例）
+- [x] ReAct 循环骨架（`agent/core.py` + 5 个单测 + `scripts/smoke_agent.py` 端到端）
 
 ### 待定
 - [ ] 评测集具体场景细化（W5 之前敲定）
