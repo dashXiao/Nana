@@ -10,9 +10,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from agent.core import Agent
+from agent.router import IntentDecision
 from agent.tools._contract import ToolRegistry
 from agent.tools.escalate_to_human import ESCALATE_TO_HUMAN_SPEC
 from agent.tools.query_orders import QUERY_ORDERS_SPEC
+from agent.tools.query_product import QUERY_PRODUCT_SPEC
 
 
 class _FakeToolCall:
@@ -210,6 +212,206 @@ def test_escalate_to_human_terminates_loop():
     assert inv.name == "escalate_to_human"
     assert inv.result["ok"] is True
     assert inv.result["data"]["escalated"] is True
+
+
+class _StubRouter:
+    """测试替身：classify() 返回预置 IntentDecision，不碰真 LLM。"""
+
+    def __init__(self, decision: IntentDecision):
+        self._decision = decision
+
+    def classify(self, _msg: str) -> IntentDecision:
+        return self._decision
+
+
+def test_exposed_tools_subset_is_sent_to_llm():
+    """run() 传 exposed_tools=(一个工具,) 时，chat_fn 收到的 tools 仅含该工具。"""
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["tools"] = tools
+        return _fake_resp(_FakeMsg(content="done"))
+
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC, QUERY_PRODUCT_SPEC]),
+        system_prompt="sys",
+        chat_fn=capturing_chat,
+    )
+    agent.run("x", user_id="U001", exposed_tools=("query_orders",))
+
+    names = [t["function"]["name"] for t in captured["tools"]]
+    assert names == ["query_orders"], f"应只暴露 query_orders，实际 {names}"
+
+
+def test_empty_exposed_tools_sends_no_schemas():
+    """exposed_tools=() 场景：chat_fn 收到空 tools 列表，对应 chitchat 意图。"""
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["tools"] = tools
+        return _fake_resp(_FakeMsg(content="您好！"))
+
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC, QUERY_PRODUCT_SPEC]),
+        system_prompt="sys",
+        chat_fn=capturing_chat,
+    )
+    agent.run("你好", user_id="U001", exposed_tools=())
+
+    assert captured["tools"] == []
+
+
+def test_none_exposed_tools_sends_all_schemas():
+    """exposed_tools=None（默认 / other 兜底）：暴露注册表里全部工具。"""
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["tools"] = tools
+        return _fake_resp(_FakeMsg(content="done"))
+
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC, QUERY_PRODUCT_SPEC]),
+        system_prompt="sys",
+        chat_fn=capturing_chat,
+    )
+    agent.run("随便问", user_id="U001")  # 不传 exposed_tools
+
+    names = {t["function"]["name"] for t in captured["tools"]}
+    assert names == {"query_orders", "query_product"}
+
+
+def test_prompt_patch_appended_to_system_on_fresh_conversation():
+    """首轮 run：patch 被拼到 self.system_prompt 末尾。"""
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["messages"] = list(messages)
+        return _fake_resp(_FakeMsg(content="ok"))
+
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="BASE",
+        chat_fn=capturing_chat,
+    )
+    agent.run("x", user_id="U001", prompt_patch="EXTRA_RULE")
+
+    systems = [m for m in captured["messages"] if m.get("role") == "system"]
+    assert len(systems) == 1
+    assert "BASE" in systems[0]["content"]
+    assert "EXTRA_RULE" in systems[0]["content"]
+
+
+def test_prompt_patch_replaces_system_when_continuing_history():
+    """多轮 + patch：不沿用 history 旧 system，而是刷新为 base + 新 patch。
+
+    理由：不同轮可能命中不同意图，patch 必须随轮更新。
+    """
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["messages"] = list(messages)
+        return _fake_resp(_FakeMsg(content="ok"))
+
+    prior_history = [
+        {"role": "system", "content": "OLD_SYSTEM_WITH_OLD_PATCH"},
+        {"role": "user", "content": "上一轮"},
+        {"role": "assistant", "content": "上一轮答复"},
+    ]
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="BASE",
+        chat_fn=capturing_chat,
+    )
+    agent.run(
+        "第二轮",
+        user_id="U001",
+        history=prior_history,
+        prompt_patch="NEW_PATCH",
+    )
+
+    systems = [m for m in captured["messages"] if m.get("role") == "system"]
+    assert len(systems) == 1, "仍应只有一条 system"
+    assert "OLD_SYSTEM_WITH_OLD_PATCH" not in systems[0]["content"]
+    assert "BASE" in systems[0]["content"]
+    assert "NEW_PATCH" in systems[0]["content"]
+
+
+def test_run_routed_escalation_fast_path_skips_llm():
+    """router 分到 escalation → fast_path 直接派发，不应触达 chat_fn。"""
+
+    def should_not_be_called(messages, tools=None, **_kwargs):
+        raise AssertionError("fast_path 场景下 LLM 不应被调用")
+
+    agent = Agent(
+        registry=ToolRegistry([ESCALATE_TO_HUMAN_SPEC, QUERY_ORDERS_SPEC]),
+        system_prompt="sys",
+        chat_fn=should_not_be_called,
+        router=_StubRouter(IntentDecision("escalation", 1.0, "rules")),
+    )
+
+    result = agent.run_routed("转人工", user_id="U001")
+
+    assert result.final == "已转接人工"
+    assert result.intent == "escalation"
+    assert result.route_path == "rules"
+    assert result.confidence == 1.0
+    assert len(result.steps) == 1
+    inv = result.steps[0].invocations[0]
+    assert inv.name == "escalate_to_human"
+    assert inv.result["ok"] is True
+
+
+def test_run_routed_non_fast_path_passes_subset_and_patch_to_llm():
+    """chitchat 意图：exposed_tools=() + prompt_patch 同时进入 chat_fn。"""
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["messages"] = list(messages)
+        captured["tools"] = tools
+        return _fake_resp(_FakeMsg(content="您好！"))
+
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC, QUERY_PRODUCT_SPEC]),
+        system_prompt="BASE",
+        chat_fn=capturing_chat,
+        router=_StubRouter(IntentDecision("chitchat", 1.0, "rules")),
+    )
+
+    result = agent.run_routed("你好", user_id="U001")
+
+    # 工具子集为空
+    assert captured["tools"] == []
+    # system 被追加了 chitchat 的 prompt_patch（"寒暄/闲聊"字样来自 POLICY_MAP）
+    systems = [m for m in captured["messages"] if m.get("role") == "system"]
+    assert "寒暄" in systems[0]["content"] or "闲聊" in systems[0]["content"]
+    # RunResult 带上路由元数据
+    assert result.intent == "chitchat"
+    assert result.route_path == "rules"
+    assert result.confidence == 1.0
+    assert result.final == "您好！"
+
+
+def test_run_routed_other_intent_exposes_all_tools():
+    """default 兜底：暴露全部工具，行为等同未路由的 run()。"""
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["tools"] = tools
+        return _fake_resp(_FakeMsg(content="done"))
+
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC, QUERY_PRODUCT_SPEC]),
+        system_prompt="BASE",
+        chat_fn=capturing_chat,
+        router=_StubRouter(IntentDecision("other", 0.0, "default")),
+    )
+
+    result = agent.run_routed("奇怪的问题", user_id="U001")
+
+    names = {t["function"]["name"] for t in captured["tools"]}
+    assert names == {"query_orders", "query_product"}
+    assert result.intent == "other"
+    assert result.route_path == "default"
 
 
 def test_malformed_arguments_dispatched_as_invalid_input():

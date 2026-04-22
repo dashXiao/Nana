@@ -137,7 +137,15 @@ turn_count: 12
   - [x] 商品：LLM 从 catalog 挑 product_ids → `query_product(ids)` 全量加载完整 md
   - [x] 政策：`query_policy()` 按需返回整个 `policies.md`（不切分 section）
   - [x] 护栏约束：政策类问题必须走 `query_policy`，禁止 LLM 臆造（由 system prompt 硬约束）
-- [ ] **M5 · 意图路由**：轻量分类 → 派发
+- [x] **M5 · 意图路由**：分层漏斗（规则 → LLM 分类 → 默认兜底）+ intent → policy 映射，Framing A「config 派」见 §9 #12
+  - [x] 规则层：整串匹配极短高置信短语（escalation / chitchat），0 次 LLM
+  - [x] LLM 分类层：独立一次 qwen-plus 结构化输出调用，JSON 解析容错（markdown 包裹 / clamp 值域 / 抛异常降级）
+  - [x] 默认兜底：低置信度 / 格式错 / 网络错 → `other` + 全工具暴露（不劣化于未路由）
+  - [x] `IntentPolicy`：每意图绑定 exposed_tools（None/空元组/子集三态）+ prompt_patch + fast_path_tool
+  - [x] `Agent.run()` 扩展 exposed_tools / prompt_patch；`run_routed()` 编排全链路
+  - [x] `RunResult` 携带 `intent / route_path / confidence` 三字段，供 W5 按意图分桶统计
+  - [x] escalation fast_path：规则命中即绕 LLM 直接派发 `escalate_to_human`，零 LLM 成本
+  - [x] 测试：18 条 router 单测 + 8 条 core 扩展单测 + `smoke_agent.py` S5 路由分桶场景
 - [~] **M6 · 护栏（分层防御）**
   - [x] 工具层鉴权：`initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截（`query_orders` 因入参不含 order_id，已在架构上消除越权面）
   - [ ] Prompt 注入过滤
@@ -202,13 +210,13 @@ nana-agent/
 
 ## 7. 里程碑与当前进展
 
-**当前阶段**：**W2 进行中** —— M2 工具层 5/5 已齐；下一件是 M3 两层记忆。
+**当前阶段**：**W2 收口** —— M2 工具层 5/5 + M5 意图路由（Framing A）已落；下一件是 M3 两层记忆（W3）。
 
 | 周 | 目标 | 状态 |
 |---|---|---|
 | **W1** | DB Schema + seed + ReAct 循环 + 工具契约 + 首批工具 | **[x] 超额完成**（4 工具 + catalog，见下） |
-| **W2** | 补齐第 5 工具 + 两层记忆 | **[~]**（工具齐，记忆未开工） |
-| **W3** | 意图路由 + qwen-plus 深度优化 | [ ] |
+| **W2** | 补齐第 5 工具 + 意图路由（作为项目亮点，见 §9 #12） | **[x]** |
+| **W3** | 两层记忆 + qwen-plus 深度优化 | [ ] |
 | **W4** | 护栏补全（注入过滤 / 情绪感知）| [ ] |
 | **W5** | 评估体系（评测集 + 自动指标 + Judge + 消融 + 红队） | [ ] |
 | **W6** | Gradio Demo + Docker + README + 技术博客 | [ ] |
@@ -219,7 +227,8 @@ nana-agent/
 - **循环 & 协议**：`agent/core.py` ReAct 骨架（`Step` / `ToolInvocation` / `RunResult` + `max_steps` 熔断 + 派发前 `user_id` 硬覆盖）；工具契约 `_contract.py`（OpenAI function calling schema + 统一错误返回）；qwen-plus client
 - **工具（5/5）**：`query_orders` / `query_product`（DB + md 融合）/ `query_policy` / `initiate_refund`（工具层三道校验，M6 工具层鉴权子项由此落地）/ `escalate_to_human`（终止型，循环在 `agent/core.py` 按 name 识别后硬切返回"已转接人工"）
 - **M4 catalog**：两份 system prompt 写死 3 商品 ID + 名称
-- **测试**：41 pytest + `scripts/smoke_agent.py` 四场景全绿；`scripts/chat.py` REPL 供人工测试
+- **M5 意图路由（Framing A · config 派）**：`agent/router.py` 漏斗分类器（rules → LLM → default）+ `POLICY_MAP` 意图策略表（7 意图：escalation/chitchat/order_query/product_inquiry/policy_question/refund_request/other）+ `Agent.run_routed()` 编排；`RunResult` 带 `intent/route_path/confidence` 供 W5 分桶；escalation 规则层命中走 fast_path 绕 LLM
+- **测试**：67 pytest（含 18 router + 8 core 扩展）全绿 + `scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 已切 `run_routed` 供人工测试
 
 ### 下一步
 
@@ -259,6 +268,12 @@ nana-agent/
 | 9 | 不落运行期 trace 表，原 M8/M9 观测性模块移除 | 评测阶段由 eval harness 现场采集 latency/token/cost 即足够；运行期全量 trace 系统 ROI 低 |
 | 10 | 种子数据全量写死（2 用户 / 3 商品 / 10 订单含 3 异常），无随机、无 md→DB 同步 | 规模极小且几乎不变，写死最省心；随机生成与同步逻辑都是伪复杂度 |
 | 11 | `escalate_to_human` 的终止语义在 Agent 循环里按 name 硬匹配，不抽 `ToolSpec.terminates` 字段 | YAGNI：当前只有一个终止型工具，通用化抽象待未来第二个出现再做；现在 3 行 if 比一套字段+调度更清晰 |
+| 12 | 意图路由走 **Framing A「config 派」**（一个 Agent + 配置表），不拆 sub-agent + orchestrator（Framing B） | 7 个意图的 prompt_patch 本质同构（共享基座 + 小段专属提示），硬包装成 sub-agent 会被面试官识破是 cosmetic；A 的 `(exposed_tools, prompt_patch, fast_path_tool)` 元组未来可直接重命名为 SpecialistAgent 升级到 B，保留路径无损耗 |
+| 13 | 路由用**独立一次 LLM 分类调用**（结构化 JSON 输出），不做 `pick_intent` 伪工具混进 ReAct | 独立调用语义清晰、可测、可换模型；混进 ReAct 会让"选意图"和"选动作"耦合，评测分桶也会失真 |
+| 14 | `chitchat` 意图不做 fast_path 模板回复，而是 `exposed_tools=()` 仍让 LLM 自然生成 | 模板回"您好！"应对"谢谢你"会很怪；零工具既省 tokens 又杜绝 LLM 对寒暄意外调 `query_orders`，自然度 & 安全性双赢 |
+| 15 | 带 `prompt_patch` 的多轮 run：**覆盖** `messages[0]` 的 system，而非沿用 history 原 system | 不同轮可能命中不同意图，patch 必须随轮更新；patch 为空时仍保持"沿用历史 system"的旧行为，不破坏既有测试 |
+| 16 | Slim base + 规则下沉：base system prompt 只含身份 + catalog + 格式（~130 字符），原 6 条行为规则全部拆到对应 `POLICY_MAP[intent].prompt_patch`，`other` 兜底 patch 承载完整规则集 | 原长版 base 已包含所有意图规则，patch 只是冗余强调；下沉后 LLM 每轮只看到与当前意图相关的规则，特定意图路径 tokens 降 ~80%；patch 真实承担路由价值（不再是装饰），同时"routing 不只裁工具集，还裁行为约束"成为简历叙事 |
+| 17 | 进一步下沉：商品 catalog 从 base 挪到 `product_inquiry` 的 patch，base 砍到身份 + 格式两行（~30 字符） | 只有商品咨询意图需要把"蓝牙耳机"映射到 `product_id`；订单/政策/退款/闲聊看到 catalog 是纯噪声，放 base 相当于每轮多塞 3 行无用资料。"资料按意图需用即挂"与"规则按意图需用即挂"对称，收敛路由心智模型 |
 
 ---
 
@@ -268,6 +283,9 @@ nana-agent/
 - [ ] 长期记忆摘要的 md 模板定稿（frontmatter 字段、body 结构）
 - [ ] 红队攻击用例库来源（自己设计 vs 参考公开数据集）
 - [ ] 退款流程对"边界日期"订单的处理（例如发货第 7 天）是否需要额外 prompt 话术引导
+- [ ] 路由 confidence 阈值 0.6 是凭经验拍的，W5 用真实样本标注后再回调
+- [ ] 分类 LLM 的 prompt 目前是极简版，若 smoke 中 order_query / product_inquiry / policy_question 错分率高需迭代（可能要加 few-shot）
+- [ ] 意图粒度：`order_query` 是否拆"物流进度" vs "状态确认"、`refund_request` 是否独立出"已发货 vs 未发货"子类——视 W5 分桶数据决定
 
 ---
 

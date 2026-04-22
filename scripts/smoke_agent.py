@@ -25,6 +25,7 @@ from agent.tools.escalate_to_human import ESCALATE_TO_HUMAN_SPEC  # noqa: E402
 from agent.tools.initiate_refund import INITIATE_REFUND_SPEC  # noqa: E402
 from agent.tools.query_orders import QUERY_ORDERS_SPEC  # noqa: E402
 from agent.tools.query_policy import QUERY_POLICY_SPEC  # noqa: E402
+from agent.tools.query_product import QUERY_PRODUCT_SPEC  # noqa: E402
 from db import db_session  # noqa: E402
 from scripts.seed import seed  # noqa: E402
 
@@ -38,6 +39,7 @@ SYSTEM_PROMPT = """\
 
 可用工具：
 - query_orders：查询当前用户全部订单
+- query_product：按 product_ids 批量查商品详情（价格、库存、介绍）
 - query_policy：查询全站售后 / 配送 / 退款政策（无参）
 - initiate_refund：对指定订单发起退款（会真改 DB！慎用）
 - escalate_to_human：转接人工客服（调用后对话立刻结束）
@@ -104,6 +106,7 @@ def run() -> None:
     registry = ToolRegistry(
         [
             QUERY_ORDERS_SPEC,
+            QUERY_PRODUCT_SPEC,
             INITIATE_REFUND_SPEC,
             QUERY_POLICY_SPEC,
             ESCALATE_TO_HUMAN_SPEC,
@@ -192,6 +195,85 @@ def run() -> None:
     )
     assert r4b.final == "已转接人工", f"S4b final 应为「已转接人工」，实际：{r4b.final!r}"
     print("  ✓ S4b PASS: 短输入也命中工具 + final 硬切\n")
+
+    # ============ S5 · 意图路由分桶（run_routed 专测） ============
+    # 用 run_routed 跑，验证三件事：
+    #   1) 规则层能截住 escalation / chitchat（0 次分类 LLM）
+    #   2) LLM 分类能把业务问法打到对的 intent 上
+    #   3) 每种 intent 下 LLM 只看得到对应子集工具——不该调的工具绝对不会出现
+    print("--- S5 · 意图路由分桶 ---")
+
+    def _assert_route(r: RunResult, expect_intent: str, expect_paths: set[str]) -> None:
+        assert r.intent == expect_intent, (
+            f"intent 预期 {expect_intent}，实际 {r.intent}（path={r.route_path}, conf={r.confidence:.2f}）"
+        )
+        assert r.route_path in expect_paths, (
+            f"route_path 预期 {expect_paths}，实际 {r.route_path}"
+        )
+
+    def _tool_names(r: RunResult) -> list[str]:
+        return [inv.name for step in r.steps for inv in step.invocations]
+
+    # S5a: 查订单 → order_query（LLM 分类）, 仅 query_orders 被调
+    msg5a = "帮我看一下我最近的订单状态"
+    print(f"USER: {msg5a}")
+    r5a = agent.run_routed(msg5a, user_id=user_id)
+    _print_run(r5a)
+    print(f"  [route] {r5a.route_path}:{r5a.intent} conf={r5a.confidence:.2f}")
+    _assert_route(r5a, "order_query", {"llm"})
+    tools_5a = _tool_names(r5a)
+    assert tools_5a == ["query_orders"] or tools_5a == [], (
+        f"S5a 只应调 query_orders 或不调工具，实际 {tools_5a}"
+    )
+    assert "query_product" not in tools_5a and "query_policy" not in tools_5a
+    print("  ✓ S5a PASS: 意图命中 + 子集工具暴露\n")
+
+    # S5b: 商品咨询 → product_inquiry, 仅 query_product
+    msg5b = "无线蓝牙耳机 X1 的续航时间是多久？"
+    print(f"USER: {msg5b}")
+    r5b = agent.run_routed(msg5b, user_id=user_id)
+    _print_run(r5b)
+    print(f"  [route] {r5b.route_path}:{r5b.intent} conf={r5b.confidence:.2f}")
+    _assert_route(r5b, "product_inquiry", {"llm"})
+    tools_5b = _tool_names(r5b)
+    assert "query_orders" not in tools_5b and "query_policy" not in tools_5b, (
+        f"S5b 不该调 query_orders/query_policy，实际 {tools_5b}"
+    )
+    print("  ✓ S5b PASS\n")
+
+    # S5c: 政策咨询 → policy_question, 仅 query_policy
+    msg5c = "发货之后几天内可以申请退货？"
+    print(f"USER: {msg5c}")
+    r5c = agent.run_routed(msg5c, user_id=user_id)
+    _print_run(r5c)
+    print(f"  [route] {r5c.route_path}:{r5c.intent} conf={r5c.confidence:.2f}")
+    _assert_route(r5c, "policy_question", {"llm"})
+    tools_5c = _tool_names(r5c)
+    assert "query_orders" not in tools_5c and "query_product" not in tools_5c
+    print("  ✓ S5c PASS\n")
+
+    # S5d: 转人工 → escalation（规则层 + fast_path，0 次 LLM）
+    msg5d = "转人工"
+    print(f"USER: {msg5d}")
+    r5d = agent.run_routed(msg5d, user_id=user_id)
+    _print_run(r5d)
+    print(f"  [route] {r5d.route_path}:{r5d.intent} conf={r5d.confidence:.2f}")
+    _assert_route(r5d, "escalation", {"rules"})
+    assert r5d.final == "已转接人工"
+    assert _tool_names(r5d) == ["escalate_to_human"]
+    print("  ✓ S5d PASS: 规则命中 + fast_path 硬切\n")
+
+    # S5e: 打招呼 → chitchat（规则层 + 零工具暴露，绝对不调工具）
+    msg5e = "你好"
+    print(f"USER: {msg5e}")
+    r5e = agent.run_routed(msg5e, user_id=user_id)
+    _print_run(r5e)
+    print(f"  [route] {r5e.route_path}:{r5e.intent} conf={r5e.confidence:.2f}")
+    _assert_route(r5e, "chitchat", {"rules"})
+    assert _tool_names(r5e) == [], (
+        f"chitchat 场景下绝不该调工具，实际 {_tool_names(r5e)}"
+    )
+    print("  ✓ S5e PASS: 零工具暴露，LLM 只做自然语言回复\n")
 
     print("=== all scenarios passed. ===")
 
