@@ -18,6 +18,16 @@ import json
 import sys
 from pathlib import Path
 
+# 某些 IDE 终端（PyCharm / VSCode 的默认配置）LANG 不是 utf-8，
+# input() 会用 surrogateescape 把中文读成 \udcXX 孤立代理，
+# 后续拼 JSON 发给 LLM 时就崩 UnicodeEncodeError。这里强制 UTF-8。
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError):
+            pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.core import Agent, RunResult  # noqa: E402
