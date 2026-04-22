@@ -4,7 +4,7 @@
 > 开工前读 §7（现状）+ §10（待定）；收工前更新 §7 与 §4 checkbox；有新决策追加 §9 一行。
 > 历史变更查 git log，不在本文件流水账。
 
-- **Last updated**: 2026-04-21
+- **Last updated**: 2026-04-22
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -13,7 +13,7 @@
 
 自研一个面向电商客服场景的多轮对话 Agent，用于**求职 Agent 开发岗位**，目标是：
 - **完整但不过度复杂** —— 覆盖 Agent 开发的关键能力
-- **有亮点** —— 记忆、评估、可观测性是核心卖点
+- **有亮点** —— 意图路由、两层记忆、评估体系、按领域裁剪架构（去 RAG / 去向量）
 - **符合真实场景** —— 电商客服的工具与流程
 - **可量化的工作价值** —— 系统化评测与消融实验
 
@@ -132,20 +132,15 @@ turn_count: 12
 - [ ] **M3 · 两层记忆**（简化自原三层）
   - [ ] 短期：滚动窗口 + 超阈值时触发上下文压缩（LLM 摘要近期对话）
   - [ ] 长期：per-session 结构化摘要，`memory/sessions/{user_id}/*.md`；新会话载入最近 3–5 条
-- [~] **M4 · 知识检索策略**（非 RAG）
-  - [x] Catalog 注入：system prompt 直接写死 3 个商品的 **ID + 名称**（不含价格/库存/描述，避免 LLM 引用过期值）
-  - [x] 商品：LLM 从 catalog 挑 product_ids → `query_product(ids)` 全量加载完整 md
-  - [x] 政策：`query_policy()` 按需返回整个 `policies.md`（不切分 section）
-  - [x] 护栏约束：政策类问题必须走 `query_policy`，禁止 LLM 臆造（由 system prompt 硬约束）
-- [x] **M5 · 意图路由**：分层漏斗（规则 → LLM 分类 → 默认兜底）+ intent → policy 映射，Framing A「config 派」见 §9 #12
-  - [x] 规则层：整串匹配极短高置信短语（escalation / chitchat），0 次 LLM
-  - [x] LLM 分类层：独立一次 qwen-plus 结构化输出调用，JSON 解析容错（markdown 包裹 / clamp 值域 / 抛异常降级）
-  - [x] 默认兜底：低置信度 / 格式错 / 网络错 → `other` + 全工具暴露（不劣化于未路由）
-  - [x] `IntentPolicy`：每意图绑定 exposed_tools（None/空元组/子集三态）+ prompt_patch + fast_path_tool
-  - [x] `Agent.run()` 扩展 exposed_tools / prompt_patch；`run_routed()` 编排全链路
-  - [x] `RunResult` 携带 `intent / route_path / confidence` 三字段，供 W5 按意图分桶统计
-  - [x] escalation fast_path：规则命中即绕 LLM 直接派发 `escalate_to_human`，零 LLM 成本
-  - [x] 测试：18 条 router 单测 + 8 条 core 扩展单测 + `smoke_agent.py` S5 路由分桶场景
+- [x] **M4 · 知识检索策略**（非 RAG）
+  - [x] Catalog 注入：仅 `product_id + 名称`（价格/库存/描述走工具，防引用过期值）；M5 后 catalog 已从 base 下沉到 `product_inquiry` patch（§9 #17）
+  - [x] 商品：LLM 从 catalog 挑 `product_ids` → `query_product(ids)` 全量加载完整 md
+  - [x] 政策：`query_policy()` 无参返回整个 `policies.md`（不切分 section），system 硬约束不得臆造
+- [x] **M5 · 意图路由**：分层漏斗 + `IntentPolicy` 策略表（7 意图），Framing A「config 派」（详见 §9 #12–#18）
+  - [x] 三层漏斗：规则 0 LLM / LLM 一次结构化 JSON / 低置信度 → `other` 兜底；分类器 prompt 带"多意图→other"负样本
+  - [x] `IntentPolicy(exposed_tools, prompt_patch, fast_path_tool)` 绑定执行策略；`Agent.run_routed()` 编排分类 → 策略 → fast_path 或带工具子集的 ReAct
+  - [x] `RunResult` 带 `intent/route_path/confidence` 供 W5 分桶；escalation 规则命中走 fast_path 零 LLM 成本
+  - [x] Slim base + 资料/规则按需挂到 patch（base 仅身份+格式；catalog 挂 product_inquiry；规则挂各意图；`other` 兜底承载全量规则）
 - [~] **M6 · 护栏（分层防御）**
   - [x] 工具层鉴权：`initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截（`query_orders` 因入参不含 order_id，已在架构上消除越权面）
   - [ ] Prompt 注入过滤
@@ -188,18 +183,18 @@ nana-agent/
 ├── agent/
 │   ├── core.py              # ReAct 循环
 │   ├── llm.py               # qwen-plus 客户端（OpenAI 兼容）
-│   ├── router.py            # 意图路由（W3）
+│   ├── router.py            # 意图路由
 │   ├── tools/               # 5 个工具，一工具一文件；OpenAI function calling schema
-│   ├── memory/              # 短期滚动+压缩 / 长期 per-session 摘要（W2）
-│   └── guardrails/          # Prompt 注入过滤 / 情绪识别（W4）
+│   ├── memory/              # 短期滚动+压缩 / 长期 per-session 摘要
+│   └── guardrails/          # Prompt 注入过滤 / 情绪识别
 ├── knowledge/
 │   ├── policies.md          # 全站统一政策（退换货/配送/FAQ）
 │   └── products/            # 每商品一 md，文件名即 product_id
 ├── memory/
 │   └── sessions/{user_id}/  # per-user 会话摘要
 ├── db/                      # SQLite schema + 连接封装
-├── api/                     # FastAPI 入口（W6）
-├── eval/                    # 评测集 / 指标 / Judge / 红队 / 报告（W5）
+├── api/                     # FastAPI 入口
+├── eval/                    # 评测集 / 指标 / Judge / 红队 / 报告
 ├── scripts/                 # seed.py / chat.py REPL / smoke_*.py
 ├── tests/                   # pytest
 ├── PLAN.md                  # 本文件
@@ -210,12 +205,12 @@ nana-agent/
 
 ## 7. 里程碑与当前进展
 
-**当前阶段**：**W2 收口** —— M2 工具层 5/5 + M5 意图路由（Framing A）已落；下一件是 M3 两层记忆（W3）。
+**当前阶段**：**进入 W3** —— W2 已完（工具 5/5 + M5 意图路由，详见 §9 #12–#18）；下一件是 M3 两层记忆。
 
 | 周 | 目标 | 状态 |
 |---|---|---|
 | **W1** | DB Schema + seed + ReAct 循环 + 工具契约 + 首批工具 | **[x] 超额完成**（4 工具 + catalog，见下） |
-| **W2** | 补齐第 5 工具 + 意图路由（作为项目亮点，见 §9 #12） | **[x]** |
+| **W2** | 补齐第 5 工具 + 意图路由 | **[x]** |
 | **W3** | 两层记忆 + qwen-plus 深度优化 | [ ] |
 | **W4** | 护栏补全（注入过滤 / 情绪感知）| [ ] |
 | **W5** | 评估体系（评测集 + 自动指标 + Judge + 消融 + 红队） | [ ] |
@@ -224,11 +219,10 @@ nana-agent/
 ### 已完成（累计）
 
 - **数据层**：SQLite schema + `seed.py`（2 用户 / 3 商品 / 10 订单含 3 异常，全量写死）+ `knowledge/products/*.md` + `knowledge/policies.md`（"发货日 +7 天"统一规则）
-- **循环 & 协议**：`agent/core.py` ReAct 骨架（`Step` / `ToolInvocation` / `RunResult` + `max_steps` 熔断 + 派发前 `user_id` 硬覆盖）；工具契约 `_contract.py`（OpenAI function calling schema + 统一错误返回）；qwen-plus client
-- **工具（5/5）**：`query_orders` / `query_product`（DB + md 融合）/ `query_policy` / `initiate_refund`（工具层三道校验，M6 工具层鉴权子项由此落地）/ `escalate_to_human`（终止型，循环在 `agent/core.py` 按 name 识别后硬切返回"已转接人工"）
-- **M4 catalog**：两份 system prompt 写死 3 商品 ID + 名称
-- **M5 意图路由（Framing A · config 派）**：`agent/router.py` 漏斗分类器（rules → LLM → default）+ `POLICY_MAP` 意图策略表（7 意图：escalation/chitchat/order_query/product_inquiry/policy_question/refund_request/other）+ `Agent.run_routed()` 编排；`RunResult` 带 `intent/route_path/confidence` 供 W5 分桶；escalation 规则层命中走 fast_path 绕 LLM
-- **测试**：67 pytest（含 18 router + 8 core 扩展）全绿 + `scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 已切 `run_routed` 供人工测试
+- **骨架**：`agent/core.py` ReAct 循环（`Step`/`ToolInvocation`/`RunResult` + `max_steps` + 派发前 `user_id` 硬覆盖）；工具契约 `_contract.py`（OpenAI function calling + 统一错误返回）；qwen-plus client（env 必填，模块级 `MODEL/client`）
+- **工具 5/5**：`query_orders` / `query_product`（DB+md 融合）/ `query_policy` / `initiate_refund`（三道校验）/ `escalate_to_human`（终止型，按 name 硬切返回"已转接人工"）
+- **M5 意图路由**：`agent/router.py` 漏斗分类器 + 7 意图 `POLICY_MAP` + `Agent.run_routed()` 编排；slim base + 资料/规则按意图下沉到 patch（`other` 兜底承载全量规则）；escalation 走 fast_path
+- **测试 & 人工**：67 pytest 全绿；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 切 `run_routed` 并打印路由 / system / 工具调用 trace
 
 ### 下一步
 
