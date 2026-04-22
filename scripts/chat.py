@@ -108,6 +108,7 @@ def _print_trace(result: RunResult) -> None:
             print(f"  │ {line}")
         print("  └─" + "─" * 68)
 
+    # 实际工具调用：路由/prompt 是"输入侧"，工具调用是"输出侧"，按数据流顺序放最后。
     for step in result.steps:
         for inv in step.invocations:
             args = json.dumps(inv.arguments, ensure_ascii=False)
