@@ -1,13 +1,13 @@
 """qwen-plus 客户端（走阿里云 DashScope 的 OpenAI 兼容端点）。
 
-设计目标：薄封装——只做 env 读取 + 默认值填充，把原生 openai SDK 对象直接暴露出去，
-不在这里做 ReAct 逻辑。ReAct 循环由上层 `agent/core.py` 负责。
+薄封装：env 读取 + 模块级 client + 单 chat 函数。ReAct 循环由 `agent/core.py` 负责。
+env 三件套必填（DASHSCOPE_API_KEY / DASHSCOPE_BASE_URL / LLM_MODEL），缺任何一个
+import 即报错——拒绝静默兜底成默认端点/默认模型，避免".env 没配好但跑起来不知道"。
 """
 
 from __future__ import annotations
 
 import os
-from functools import lru_cache
 from typing import Any
 
 from dotenv import load_dotenv
@@ -15,25 +15,19 @@ from openai import OpenAI
 
 load_dotenv()
 
-_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-_DEFAULT_MODEL = "qwen-plus"
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"{name} 未设置，请在 .env 填入（参考 .env.example）。")
+    return value
 
 
-@lru_cache(maxsize=1)
-def get_client() -> OpenAI:
-    """返回单例 OpenAI client，指向 DashScope 兼容端点。"""
-    api_key = os.getenv("DASHSCOPE_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "DASHSCOPE_API_KEY 未设置。请在 .env 填入从 https://bailian.console.aliyun.com/ 获取的 key。"
-        )
-    base_url = os.getenv("DASHSCOPE_BASE_URL", _DEFAULT_BASE_URL)
-    return OpenAI(api_key=api_key, base_url=base_url)
-
-
-def model_name() -> str:
-    """返回当前使用的模型名（默认 qwen-plus）。"""
-    return os.getenv("LLM_MODEL", _DEFAULT_MODEL)
+MODEL = _required_env("LLM_MODEL")
+client = OpenAI(
+    api_key=_required_env("DASHSCOPE_API_KEY"),
+    base_url=_required_env("DASHSCOPE_BASE_URL"),
+)
 
 
 def chat(
@@ -41,9 +35,8 @@ def chat(
     tools: list[dict] | None = None,
     **kwargs: Any,
 ):
-    """最小封装：chat.completions.create，带默认 model；tools 为 None 时不传该字段。"""
-    client = get_client()
-    payload: dict[str, Any] = {"model": model_name(), "messages": messages, **kwargs}
+    """最小封装：chat.completions.create；tools 为 None/空时不传该字段。"""
+    payload: dict[str, Any] = {"model": MODEL, "messages": messages, **kwargs}
     if tools:
         payload["tools"] = tools
     return client.chat.completions.create(**payload)

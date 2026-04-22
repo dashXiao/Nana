@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.core import Agent, RunResult  # noqa: E402
-from agent.llm import model_name  # noqa: E402
+from agent.llm import MODEL  # noqa: E402
 from agent.tools._contract import ToolRegistry  # noqa: E402
 from agent.tools.escalate_to_human import ESCALATE_TO_HUMAN_SPEC  # noqa: E402
 from agent.tools.initiate_refund import INITIATE_REFUND_SPEC  # noqa: E402
@@ -99,7 +99,7 @@ def _status(order_id: str) -> str:
 
 
 def run() -> None:
-    print(f"=== model: {model_name()} ===\n")
+    print(f"=== model: {MODEL} ===\n")
     seed()
     print()
 

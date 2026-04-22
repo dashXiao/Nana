@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent.llm import chat, model_name  # noqa: E402
+from agent.llm import MODEL, chat  # noqa: E402
 from agent.tools._contract import ToolRegistry, ToolSpec, ok  # noqa: E402
 
 
@@ -50,7 +50,7 @@ def run() -> None:
         {"role": "user", "content": "请用工具帮我算 13 + 29 等于多少？"},
     ]
 
-    print(f"=== model: {model_name()} ===")
+    print(f"=== model: {MODEL} ===")
     print(">>> 第 1 轮：发送用户消息，期望模型返回 tool_call")
 
     resp = chat(messages=messages, tools=registry.openai_tools())

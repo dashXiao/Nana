@@ -31,7 +31,7 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.core import Agent, RunResult  # noqa: E402
-from agent.llm import model_name  # noqa: E402
+from agent.llm import MODEL  # noqa: E402
 from agent.router import BASE_SYSTEM_PROMPT, POLICY_MAP  # noqa: E402
 from agent.tools._contract import ToolRegistry  # noqa: E402
 from agent.tools.escalate_to_human import ESCALATE_TO_HUMAN_SPEC  # noqa: E402
@@ -132,7 +132,7 @@ def _print_tools(registry: ToolRegistry) -> None:
 
 
 def run() -> None:
-    print(f"=== NanaShop Agent REPL · model: {model_name()} ===")
+    print(f"=== NanaShop Agent REPL · model: {MODEL} ===")
     print("启动时先 seed 一次，确保初始状态干净...")
     seed()
     print()
