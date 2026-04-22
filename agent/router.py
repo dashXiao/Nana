@@ -162,17 +162,28 @@ POLICY_MAP: dict[str, IntentPolicy] = {
 }
 
 
-# 分类用的 system prompt 故意保持极简，避免拖累分类 LLM 调用的成本。
+# 分类用的 system prompt 保持紧凑但不吝惜样例——多意图识别全靠这几个例子锚定，
+# 缺了样例 LLM 会倾向"挑一个最像的主意图"，导致跨维度问题漏路由（blog 点）。
 _CLASSIFIER_SYSTEM = """\
 你是电商客服对话的意图分类器。根据用户消息，从以下 7 个标签中选一个：
 
 - escalation: 用户明确要求转人工/找真人/投诉升级
 - chitchat: 寒暄、问候、感谢、闲聊，无业务诉求
-- order_query: 查询订单状态、物流、订单列表
-- product_inquiry: 询问商品价格、库存、参数、介绍
-- policy_question: 询问退换货/发货/配送/售后等政策
+- order_query: 仅询问订单状态、物流、订单列表，不涉及其他业务维度
+- product_inquiry: 仅询问商品价格、库存、参数、介绍，不涉及其他业务维度
+- policy_question: 仅询问退换货/发货/配送/售后等政策，不涉及其他业务维度
 - refund_request: 明确想退款/退货某张订单
-- other: 以上都不是，或多意图混合
+- other: 跨两类以上业务维度的复合请求，或以上都不是
+
+关键规则——**一旦用户消息同时需要查询两类业务信息，必须选 other**，不要勉强
+挑"最主要"的那个意图。参考样例：
+- "我最近的订单" → order_query
+- "你们卖什么" → product_inquiry
+- "发货几天内可退" → policy_question
+- "查我的订单和你们在售的商品" → other（订单 + 商品）
+- "我买过你们店最贵的是什么" → other（订单 + 商品价格比较）
+- "我的 O001 几天内可退" → other（订单 + 政策）
+- "耳机多少钱、有没有优惠" → other（商品 + 政策）
 
 只输出一行 JSON，不要任何解释、markdown 或其他文本，严格格式：
 {"intent": "<标签>", "confidence": <0 到 1 的浮点数>}

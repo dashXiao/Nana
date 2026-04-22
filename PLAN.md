@@ -274,6 +274,7 @@ nana-agent/
 | 15 | 带 `prompt_patch` 的多轮 run：**覆盖** `messages[0]` 的 system，而非沿用 history 原 system | 不同轮可能命中不同意图，patch 必须随轮更新；patch 为空时仍保持"沿用历史 system"的旧行为，不破坏既有测试 |
 | 16 | Slim base + 规则下沉：base system prompt 只含身份 + catalog + 格式（~130 字符），原 6 条行为规则全部拆到对应 `POLICY_MAP[intent].prompt_patch`，`other` 兜底 patch 承载完整规则集 | 原长版 base 已包含所有意图规则，patch 只是冗余强调；下沉后 LLM 每轮只看到与当前意图相关的规则，特定意图路径 tokens 降 ~80%；patch 真实承担路由价值（不再是装饰），同时"routing 不只裁工具集，还裁行为约束"成为简历叙事 |
 | 17 | 进一步下沉：商品 catalog 从 base 挪到 `product_inquiry` 的 patch，base 砍到身份 + 格式两行（~30 字符） | 只有商品咨询意图需要把"蓝牙耳机"映射到 `product_id`；订单/政策/退款/闲聊看到 catalog 是纯噪声，放 base 相当于每轮多塞 3 行无用资料。"资料按意图需用即挂"与"规则按意图需用即挂"对称，收敛路由心智模型 |
+| 18 | 分类器 prompt 加多意图→`other` 的负样本对照（"订单+商品""订单+政策""商品+政策"等 4 条样例），并在单意图标签描述前加"**仅**"字样 | 原 "多意图混合" 规则只一行描述、无样例，qwen-plus 遇"查商品和我的订单"会勉强挑主意图（实测 conf=0.65 命中 order_query，裁掉了 query_product 导致另一维度答不了）。加样例后同一句稳定落 `other` conf=0.98，两把工具都被调到。启示："跨维度 → 兜底" 规则必须用负样本锚定，仅靠抽象描述 LLM 会走捷径 |
 
 ---
 
@@ -284,7 +285,7 @@ nana-agent/
 - [ ] 红队攻击用例库来源（自己设计 vs 参考公开数据集）
 - [ ] 退款流程对"边界日期"订单的处理（例如发货第 7 天）是否需要额外 prompt 话术引导
 - [ ] 路由 confidence 阈值 0.6 是凭经验拍的，W5 用真实样本标注后再回调
-- [ ] 分类 LLM 的 prompt 目前是极简版，若 smoke 中 order_query / product_inquiry / policy_question 错分率高需迭代（可能要加 few-shot）
+- [ ] 分类 LLM 的 prompt 已加"多意图→other"负样本（§9 #18）；单意图误分率仍待 W5 真实标注后再迭代 few-shot
 - [ ] 意图粒度：`order_query` 是否拆"物流进度" vs "状态确认"、`refund_request` 是否独立出"已发货 vs 未发货"子类——视 W5 分桶数据决定
 
 ---
