@@ -1,26 +1,10 @@
 # NanaShop Agent · 开发计划与进度
 
-> **本文件是项目的单一事实来源（Single Source of Truth）**
-> 每次开始工作前先读它；每次有新决策/进展立刻更新它。
+> **单一事实来源（Single Source of Truth）**
+> 开工前读 §7（现状）+ §10（待定）；收工前更新 §7 与 §4 checkbox；有新决策追加 §9 一行。
+> 历史变更查 git log，不在本文件流水账。
 
 - **Last updated**: 2026-04-21
-- **Current phase**: W1 进行中（数据层 + 工具契约 + LLM 接入 + ReAct 循环骨架 + 2 个工具完成）
-- **Changelog**:
-  - 2026-04-20 初稿
-  - 2026-04-20 订单模型调整：加 `shipped_at` 字段；状态合并 `refunding/refunded → refunded`
-  - 2026-04-20 去除 `recommend_products` 工具，工具总数 5 → 4
-  - 2026-04-20 知识分层定稿：交易数据→DB，商品描述→每商品一 md，政策→统一 `policies.md`；加回 `query_product` 工具（总数 → 5）
-  - 2026-04-20 检索策略重构：去 Chroma 向量检索；商品用"catalog 索引 + `query_product(ids)` 全量加载"；政策用 `query_policy` 整文档按需加载；工具 → 6
-  - 2026-04-20 记忆系统简化：去掉语义记忆层；长期记忆用 md 文件存 per-session 摘要（`memory/sessions/{user_id}/*.md`），不再进 DB；Chroma 彻底移除
-  - 2026-04-20 去除状态机模块；退货流程改为 Prompt 引导 + 工具层鉴权；模块总数 10 → 9
-  - 2026-04-20 `query_policy` 简化为无参整文件返回；控制 policies.md 体积在可接受范围
-  - 2026-04-21 工具 schema 统一遵循 **OpenAI function calling** 规范（入参/出参/错误形态）
-  - 2026-04-21 **移除观测性与 trace 系统**（原 M8 / M9）：不落 trace 表、不做 Cost/Latency 运行期观测；评测阶段在 eval harness 现场记录即可。模块总数 9 → 7
-  - 2026-04-21 种子数据极简化：商品 10 → **3**、用户 5–8 → **2**、订单 20 → **10**；seed.py 全量写死、无随机
-  - 2026-04-21 工具 `query_order(user_id, order_id)` → **`query_orders(user_id)`**：用户不记订单号才是真实场景；入参不含 `order_id`，架构上消除跨用户枚举路径
-  - 2026-04-21 砍掉 `track_logistics` 工具：`query_orders` 已返回 status + shipped_at + days_since_shipped，物流追踪所需数据全在其中，再加一个工具只是对同一数据做自然语言包装；工具预算 6 → **5**
-  - 2026-04-21 政策规则简化：退货基准从"签收日起 7 天无理由 + 15 天质量问题"合并为"**发货日起 7 天内可退**"单一规则；DB 无签收字段，原规则会让 Agent 反问用户签收日期，体验破坏
-  - 2026-04-21 Catalog 改为在 system prompt 里**直接写死 ID + 名称**（3 行），不做启动时 DB 查询；规模极小 + 不变，写死最省
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -136,7 +120,7 @@ turn_count: 12
   - [x] 数据结构：`Step` / `ToolInvocation` / `RunResult`
   - [x] 循环调度 + `max_steps` 熔断
   - [x] session 上下文硬覆盖：派发前强制把 `user_id` 改为会话归属，阻断 LLM 伪造
-- [ ] **M2 · 工具层（5 个）**：**遵循 OpenAI function calling 规范**
+- [~] **M2 · 工具层（5 个）**：**遵循 OpenAI function calling 规范**
   - 每个工具提供标准 `{"type":"function","function":{"name","description","parameters":<JSON Schema>}}` 定义
   - 返回体统一为 JSON-serializable dict；错误用 `{"ok": false, "error_code", "message"}` 形态回传给 LLM
   - 用 Pydantic 校验入参，但对 LLM 暴露的 schema 以 OpenAI function calling 为准
@@ -154,10 +138,10 @@ turn_count: 12
   - [x] 政策：`query_policy()` 按需返回整个 `policies.md`（不切分 section）
   - [x] 护栏约束：政策类问题必须走 `query_policy`，禁止 LLM 臆造（由 system prompt 硬约束）
 - [ ] **M5 · 意图路由**：轻量分类 → 派发
-- [ ] **M6 · 护栏（分层防御）**
-  - [ ] 工具层鉴权：`initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截（`query_orders` 因入参不含 order_id，已在架构上消除越权面）
+- [~] **M6 · 护栏（分层防御）**
+  - [x] 工具层鉴权：`initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截（`query_orders` 因入参不含 order_id，已在架构上消除越权面）
   - [ ] Prompt 注入过滤
-  - [ ] 关键信息（价格/库存/政策）禁止 LLM 臆造，必须走工具
+  - [x] 关键信息（价格/库存/政策）禁止 LLM 臆造，必须走工具（由 system prompt 强约束）
   - [ ] 退货流程安全点不靠 FSM，由 system prompt 引导（必须确认才执行）+ 工具层鉴权双层兜底
 - [ ] **M7 · 情绪感知 + 升级**：检测负面情绪 → 自动 `escalate_to_human`
 
@@ -195,62 +179,52 @@ turn_count: 12
 nana-agent/
 ├── agent/
 │   ├── core.py              # ReAct 循环
-│   ├── router.py            # 意图路由
+│   ├── llm.py               # qwen-plus 客户端（OpenAI 兼容）
+│   ├── router.py            # 意图路由（W3）
 │   ├── tools/               # 5 个工具，一工具一文件；OpenAI function calling schema
-│   ├── memory/
-│   │   ├── short_term.py    # 滚动窗口 + 上下文压缩
-│   │   └── long_term.py     # per-session 摘要读写
-│   └── guardrails/          # 工具层鉴权 / 注入过滤 / 情绪
+│   ├── memory/              # 短期滚动+压缩 / 长期 per-session 摘要（W2）
+│   └── guardrails/          # Prompt 注入过滤 / 情绪识别（W4）
 ├── knowledge/
 │   ├── policies.md          # 全站统一政策（退换货/配送/FAQ）
 │   └── products/            # 每商品一 md，文件名即 product_id
-│       ├── P001.md
-│       └── ...
 ├── memory/
-│   └── sessions/            # per-user 会话摘要
-│       └── {user_id}/
-│           └── YYYYMMDD_HHMM_{session_id}.md
-├── data/                    # 静态 seed 源
-├── db/                      # SQLite schema + 迁移
-├── api/                     # FastAPI 入口
-├── eval/
-│   ├── datasets/            # 评测样本
-│   ├── metrics/             # 自动指标
-│   ├── judge/               # LLM Judge
-│   ├── red_team/            # 攻击用例
-│   └── reports/             # 报告
-├── scripts/                 # seed、reset、run_eval
+│   └── sessions/{user_id}/  # per-user 会话摘要
+├── db/                      # SQLite schema + 连接封装
+├── api/                     # FastAPI 入口（W6）
+├── eval/                    # 评测集 / 指标 / Judge / 红队 / 报告（W5）
+├── scripts/                 # seed.py / chat.py REPL / smoke_*.py
 ├── tests/                   # pytest
-└── README.md
+├── PLAN.md                  # 本文件
+└── CLAUDE.md                # 给 Claude Code 的协作约定
 ```
 
 ---
 
-## 7. 里程碑与进度
+## 7. 里程碑与当前进展
+
+**当前阶段**：**W2 进行中** —— 补 `escalate_to_human` + 启动 M3 两层记忆。
 
 | 周 | 目标 | 状态 |
 |---|---|---|
-| **W1** | DB Schema + seed 脚本 + ReAct 循环 + 2 个工具（OpenAI function calling schema） | [ ] 未开始 |
-| **W2** | 补齐 5 个工具 + 两层记忆（短期滚动窗口 + 长期 md 摘要） | [ ] |
-| **W3** | 知识检索（catalog 注入 + `query_product` / `query_policy`） + 意图路由 + qwen-plus 接入 | [ ] |
-| **W4** | 护栏（工具层鉴权 + 注入过滤）+ 情绪感知 | [ ] |
+| **W1** | DB Schema + seed + ReAct 循环 + 工具契约 + 首批工具 | **[x] 超额完成**（4 工具 + catalog，见下） |
+| **W2** | 补齐第 5 工具 + 两层记忆 | **[~]** |
+| **W3** | 意图路由 + qwen-plus 深度优化 | [ ] |
+| **W4** | 护栏补全（注入过滤 / 情绪感知）| [ ] |
 | **W5** | 评估体系（评测集 + 自动指标 + Judge + 消融 + 红队） | [ ] |
 | **W6** | Gradio Demo + Docker + README + 技术博客 | [ ] |
 
-### 当前进展
+### 已完成（累计）
 
-- **2026-04-20** · 完成规划，定稿技术栈与数据模型；创建 PLAN.md
-- **2026-04-20** · 检索与记忆架构重构：去 Chroma、去 RAG、去语义记忆；改为 "catalog + 全量加载" + per-session md 摘要；技术栈简化为"SQLite + 文件系统"
-- **2026-04-20** · 去除状态机模块；退货流程改为 Prompt 引导 + 工具层鉴权；整体架构从"10 模块"收敛到"9 模块"
-- **2026-04-21** · LLM 改为 **qwen-plus**；工具 schema 统一 **OpenAI function calling**；**移除运行期观测 & trace**（M8/M9 去除），架构收敛到 **7 模块**
-- **2026-04-21** · W1 数据层落地：uv 项目骨架 + SQLite DDL（users/products/orders）+ 3 商品 md + `policies.md` + `scripts/seed.py`；seed 跑通（**2 用户 / 3 商品 / 10 订单含 3 异常**，全量写死无随机）
-- **2026-04-21** · W1 工具链起步：工具契约模板（`_contract.py`）+ qwen-plus client + tool-use 冒烟测试通过；第一工具 `query_orders(user_id)` 落地（10/10 pytest 全绿）
-- **2026-04-21** · W1 ReAct 循环骨架完成：`agent/core.py` + 5 个单元测试（含 user_id 覆盖哨卡、max_steps 熔断）+ `scripts/smoke_agent.py` 端到端跑通（qwen-plus 两轮收敛）
-- **2026-04-21** · W1 第二个工具 `initiate_refund(user_id, order_id)` 完成：NOT_FOUND → UNAUTHORIZED → INVALID_STATE 三道校验，越权由工具层硬挡（分层防御硬规则层）；9 个单测覆盖 3 状态正常路径 + 幂等 + 越权 + schema 不变式；全工程 24/24 绿
-- **2026-04-21** · `query_policy()` 落地：无参整文件返回 `knowledge/policies.md`；3 个单测覆盖内容/入参形态/零参数 schema；全工程 27/27 绿
-- **2026-04-21** · `query_product(product_ids)` 落地：DB 字段 + md 描述融合，去重保序、部分不存在时 products + missing 分桶，frontmatter 剥离；9 个单测；全工程 37/37 绿
-- **2026-04-21** · 政策文件重写：退货规则从"签收日起 7 天无理由 + 15 天质量问题"简化为"**发货日起 7 天内可退**"统一规则；原规则依赖 DB 不存在的签收字段，会迫使 Agent 反问用户签收日期
-- **2026-04-21** · Catalog 落地（M4 首项）：`scripts/chat.py` 与 `scripts/smoke_agent.py` 的 system prompt 写死 P001/P002/P003 的 ID + 名称，LLM 可直接从名称/俗称映射到 product_id 再调 `query_product`；全工程 37/37 绿
+- **数据层**：SQLite schema + `seed.py`（2 用户 / 3 商品 / 10 订单含 3 异常，全量写死）+ `knowledge/products/*.md` + `knowledge/policies.md`（"发货日 +7 天"统一规则）
+- **循环 & 协议**：`agent/core.py` ReAct 骨架（`Step` / `ToolInvocation` / `RunResult` + `max_steps` 熔断 + 派发前 `user_id` 硬覆盖）；工具契约 `_contract.py`（OpenAI function calling schema + 统一错误返回）；qwen-plus client
+- **工具（4/5）**：`query_orders` / `query_product`（DB + md 融合）/ `query_policy` / `initiate_refund`（工具层三道校验，M6 工具层鉴权子项由此落地）
+- **M4 catalog**：两份 system prompt 写死 3 商品 ID + 名称
+- **测试**：37 pytest + `scripts/smoke_agent.py` 全绿；`scripts/chat.py` REPL 供人工测试
+
+### 下一步
+
+- `escalate_to_human` 工具（M2 收尾）
+- M3 两层记忆骨架：短期滚动窗口 + 长期 per-session md 摘要
 
 ---
 
@@ -271,60 +245,34 @@ nana-agent/
 
 ## 9. 决策日志（Decision Log）
 
-记录"为什么这样选"，避免后续反复纠结。
+只记"反直觉 / 会被问'为什么不那样'"的选型。按主题组织，不按时间。
 
-| 日期 | 决策 | 理由 |
+| # | 决策 | 理由 |
 |---|---|---|
-| 2026-04-20 | LLM 只用 qwen-plus，不做多模型路由 | 聚焦 Agent 本身；单模型时改写简历为"Prompt 分层 + Tool schema 精简降 token" |
-| 2026-04-20 | 框架自研，不用 LangGraph / LangChain | 体现对原理的理解，面试可深入讲 |
-| 2026-04-20 | 去 Redis 缓存层 | 性能非目标；全量落库反而支持对话回放（变成亮点） |
-| 2026-04-20 | 去优惠券、VIP、用户分类 | 保持 domain 极简；所有"个性化"来自 Agent 记忆 |
-| 2026-04-20 | 前端留到 W6 后 | 先把 Agent 能力做深 |
-| 2026-04-20 | orders 加 `shipped_at`，状态合并为 `pending/shipped/delivered/refunded` | 存时间戳而非"X 天"避免过期；退货"处理中"短暂态由 FSM 内部管，不污染 DB schema |
-| 2026-04-20 | 去掉 `recommend_products` 工具 | 推荐与电商客服核心诉求关联弱；聚焦查询/物流/退款/升级四类真实客服问题 |
-| 2026-04-20 | 知识三层分离：交易→DB / 商品描述→per-product md / 政策→统一单文件 | 按"变化频率 + 适用范围"切分，贴合真实系统；md 是商品唯一事实源，seed 脚本同步到 DB |
-| 2026-04-20 | 加回 `query_product` 工具 | 显式工具 + 多源融合（DB 交易数据 + md 描述）是结构化/非结构化知识融合的核心亮点 |
-| 2026-04-20 | 商品检索改为 "catalog + 全量加载"，不用向量 RAG | 小规模（少量商品 × ~1K tokens/条）下向量检索过度工程化；catalog 方案天然支持多商品对比（"A 和 B 哪个好"），trace 更清晰 |
-| 2026-04-20 | 政策改为整文档按需加载，不用向量 | 单文件小，chunk 反而破坏语义完整性 |
-| 2026-04-20 | 记忆系统：去语义记忆层，改两层（短期+长期摘要） | 电商客服任务导向、短 horizon，语义检索无用武之地；用结构化摘要更贴合场景 |
-| 2026-04-20 | 记忆摘要存为 md 文件，不进 DB | 内容是 LLM 生成的非结构化文本；md 可读、可版本化、与知识文件风格一致；规模下 `listdir` 排序足够当"查询" |
-| 2026-04-20 | 彻底移除 Chroma 依赖 | 无向量检索需求后，技术栈简化为 "SQLite + 文件系统"；架构决策本身成为简历亮点 |
-| 2026-04-20 | 加 `query_policy` 工具（总数 → 6） | 政策查询显式化，trace 观测性一致 |
-| 2026-04-20 | 去除状态机模块，退货流程不强制 FSM | 资源有限，接受少量边界/恶意场景不覆盖；核心安全点（越权退款）改为**工具层鉴权**守住，防御能力不降反升（无论对话路径都拦得住） |
-| 2026-04-20 | 简历叙事：从"识别高风险流程用 FSM"改为"**分层防御**（工具是 security boundary）" | 符合当前 Agent 设计主流思路；强制型 FSM 反而牺牲灵活性 |
-| 2026-04-20 | `query_policy` 简化为无参整文件返回，不做 section 切分 | 控制文件体积在 < 2K tokens，直接整文件入上下文信息完整度最高；切分会人为制造 chunking 选择问题，复杂度不值 |
-| 2026-04-21 | 工具层统一 **OpenAI function calling** schema | 业界通用规范；便于后续切换任何 OpenAI 兼容 LLM；trace/debug 时格式统一 |
-| 2026-04-21 | 移除 M8 可观测性 / M9 成本分析，不落 trace 表 | 简化开发聚焦 Agent 核心；评测阶段由 eval harness 现场采集 latency/token/cost 已足够，运行期全量 trace 系统 ROI 低 |
-| 2026-04-21 | 种子数据极简：3 商品 / 2 用户 / 10 订单全部写死，取消 md→DB 同步 | 规模极小且几乎不变，写死最省心；同步逻辑与随机生成都是伪复杂度；md 继续作为商品描述的唯一事实源 |
-| 2026-04-21 | `query_order(user_id, order_id)` → `query_orders(user_id)` | 客服真实场景下用户不记订单号；去掉 `order_id` 入参后跨用户枚举路径在架构上直接消失，越权防御示范迁移到 `initiate_refund` 更合适 |
-| 2026-04-21 | 砍掉 `track_logistics`，工具 6 → 5 | `query_orders` 已返回 status + shipped_at + days_since_shipped，物流追踪没有新增数据，仅是 LLM 侧的语言包装——LLM 自己能做，额外工具是非必要设计 |
-| 2026-04-21 | ReAct 循环在派发前硬覆盖 tool_call 的 `user_id` | session 上下文不应交给 LLM 决定；放在循环入口覆盖，任何工具都自动受益，且不需要每个工具各自防御；与未来工具层鉴权形成分层防御 |
-| 2026-04-21 | 退货规则基准改为"发货日 +7 天"，而非"签收日 +7 天无理由 / +15 天质量" | DB 没有签收字段；原规则会让 Agent 反问用户签收日期，破坏体验；统一以 shipped_at 为准，规则单一、trace 清晰 |
-| 2026-04-21 | Catalog 写死在 system prompt（ID + 名称），不做启动时 DB 查询 | 3 款商品且几乎不变，DB 查询是伪工程复杂度；只放 ID + 名称（不放价格/库存/描述），避免 LLM 引用 prompt 里的过期值——这些必须走 `query_product` 现查 |
+| 1 | LLM 单模型 qwen-plus + 自研 ReAct 循环 + 工具统一 OpenAI function calling schema | 聚焦原理展现；schema 通用便于跨 LLM 复用；不用 LangChain/LangGraph 以免被抽象遮蔽细节 |
+| 2 | 去向量 RAG、去语义记忆、去 Chroma —— 商品走 catalog+全量加载、政策整文档返回、记忆走 md 摘要 | 数据规模 < 15K tokens + 任务导向短 horizon，向量过度工程化；技术栈收敛到 SQLite + 文件系统，决策本身即简历亮点 |
+| 3 | 退货核心安全点改**工具层鉴权**（分层防御），不做 FSM 状态机 | 无论对话路径如何都拦得住越权；简历叙事为"tool 即 security boundary"，比 FSM 更主流且更灵活 |
+| 4 | ReAct 派发前硬覆盖 tool_call 的 `user_id`（循环入口统一哨卡） | session 上下文不交给 LLM 决定；任何工具自动受益，与工具层鉴权形成分层防御 |
+| 5 | 工具预算 5：`query_orders / query_product / query_policy / initiate_refund / escalate_to_human` | 去 `recommend_products`（与客服核心弱相关）、去 `track_logistics`（数据已在 query_orders 内）；`query_order` 改 `query_orders`（用户不记订单号，同时消除跨用户枚举面）|
+| 6 | 订单状态枚举 `pending/shipped/delivered/refunded` + `shipped_at` 时间戳 | 存时间戳而非"X 天"避免过期；退款过渡态由对话层管，不污染 schema |
+| 7 | 退货规则基准改为**发货日 +7 天**（原方案为"签收日 +7 天无理由 / 15 天质量"）| DB 没有签收字段；原规则会让 Agent 反问用户签收日期，体验破坏 |
+| 8 | Catalog 写死在 system prompt（仅 ID + 名称，不含价格/库存/描述） | 3 款商品近乎不变，DB 查询是伪复杂度；价格/库存放 prompt 会诱导 LLM 引用过期值 |
+| 9 | 不落运行期 trace 表，原 M8/M9 观测性模块移除 | 评测阶段由 eval harness 现场采集 latency/token/cost 即足够；运行期全量 trace 系统 ROI 低 |
+| 10 | 种子数据全量写死（2 用户 / 3 商品 / 10 订单含 3 异常），无随机、无 md→DB 同步 | 规模极小且几乎不变，写死最省心；随机生成与同步逻辑都是伪复杂度 |
 
 ---
 
-## 10. 开放问题 / 下一步动作
+## 10. 开放问题
 
-### 立即（W1 起步）
-- [x] 确定 SQLite schema DDL（users / products / orders）
-- [x] `scripts/seed.py`（md frontmatter → products 表，含 3 条异常订单）
-- [x] ReAct 循环核心数据结构（`Step` / `ToolInvocation` / `RunResult`，`agent/core.py`）
-- [x] 工具通用契约：OpenAI function calling schema 模板 + 统一错误返回形态（`agent/tools/_contract.py`）
-- [x] qwen-plus SDK 接入（`agent/llm.py`）+ 最小 tool-use demo（`scripts/smoke_llm.py`）
-- [x] 第一个工具 `query_orders`（含 Pydantic 入参、NOT_FOUND/INVALID_INPUT 错误码、10 个 pytest 用例）
-- [x] ReAct 循环骨架（`agent/core.py` + 5 个单测 + `scripts/smoke_agent.py` 端到端）
-
-### 待定
 - [ ] 评测集具体场景细化（W5 之前敲定）
 - [ ] 长期记忆摘要的 md 模板定稿（frontmatter 字段、body 结构）
 - [ ] 红队攻击用例库来源（自己设计 vs 参考公开数据集）
+- [ ] 退款流程对"边界日期"订单的处理（例如发货第 7 天）是否需要额外 prompt 话术引导
 
 ---
 
 ## 维护约定
 
-- **每次开工前**：读 §7 当前进展 + §10 下一步动作
-- **每次收工前**：更新 §4/§5 checkbox + §7 当前进展 + §9 决策日志（如有新决策）
-- **每周五**：Review §7 里程碑是否需要调整
-- **发现新问题**：立刻加到 §10 开放问题，避免遗忘
+- **每次开工前**：读 §7（现状）+ §10（待定）
+- **每次收工前**：更新 §4/§5 checkbox + §7「已完成」「下一步」；有新决策追加 §9 一行
+- **不在 PLAN.md 里留流水账**：每次提交细节（单测数量、commit 信息）一律进 git log
