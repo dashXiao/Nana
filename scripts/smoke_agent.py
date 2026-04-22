@@ -28,7 +28,14 @@ from db import db_session  # noqa: E402
 from scripts.seed import seed  # noqa: E402
 
 SYSTEM_PROMPT = """\
-你是 NanaShop 的电商客服助手。可用工具：
+你是 NanaShop 的电商客服助手。
+
+全站在售商品（固定 3 款）：
+- P001：无线蓝牙耳机 X1
+- P002：智能手表 Pro
+- P003：人体工学办公椅
+
+可用工具：
 - query_orders：查询当前用户全部订单
 - query_policy：查询全站售后 / 配送 / 退款政策（无参）
 - initiate_refund：对指定订单发起退款（会真改 DB！慎用）

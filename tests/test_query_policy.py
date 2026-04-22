@@ -18,8 +18,8 @@ def test_returns_full_policy_markdown():
     content = result["data"]["content"]
     assert isinstance(content, str)
     # 关键政策段落都应该在返回里——Agent 凭这些才能回答
-    assert "七天无理由" in content
-    assert "质量问题" in content
+    assert "退货" in content
+    assert "发货" in content
     assert "退款" in content
     assert "配送" in content
 

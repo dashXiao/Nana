@@ -19,6 +19,8 @@
   - 2026-04-21 种子数据极简化：商品 10 → **3**、用户 5–8 → **2**、订单 20 → **10**；seed.py 全量写死、无随机
   - 2026-04-21 工具 `query_order(user_id, order_id)` → **`query_orders(user_id)`**：用户不记订单号才是真实场景；入参不含 `order_id`，架构上消除跨用户枚举路径
   - 2026-04-21 砍掉 `track_logistics` 工具：`query_orders` 已返回 status + shipped_at + days_since_shipped，物流追踪所需数据全在其中，再加一个工具只是对同一数据做自然语言包装；工具预算 6 → **5**
+  - 2026-04-21 政策规则简化：退货基准从"签收日起 7 天无理由 + 15 天质量问题"合并为"**发货日起 7 天内可退**"单一规则；DB 无签收字段，原规则会让 Agent 反问用户签收日期，体验破坏
+  - 2026-04-21 Catalog 改为在 system prompt 里**直接写死 ID + 名称**（3 行），不做启动时 DB 查询；规模极小 + 不变，写死最省
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -146,11 +148,11 @@ turn_count: 12
 - [ ] **M3 · 两层记忆**（简化自原三层）
   - [ ] 短期：滚动窗口 + 超阈值时触发上下文压缩（LLM 摘要近期对话）
   - [ ] 长期：per-session 结构化摘要，`memory/sessions/{user_id}/*.md`；新会话载入最近 3–5 条
-- [ ] **M4 · 知识检索策略**（非 RAG）
-  - [ ] Catalog 注入：system prompt 含全部 3 个商品的 ID / 名称 / 品类 / 简介
-  - [ ] 商品：LLM 从 catalog 挑 product_ids → `query_product(ids)` 全量加载完整 md
-  - [ ] 政策：`query_policy()` 按需返回整个 `policies.md`（不切分 section）
-  - [ ] 护栏约束：政策类问题必须走 `query_policy`，禁止 LLM 臆造
+- [~] **M4 · 知识检索策略**（非 RAG）
+  - [x] Catalog 注入：system prompt 直接写死 3 个商品的 **ID + 名称**（不含价格/库存/描述，避免 LLM 引用过期值）
+  - [x] 商品：LLM 从 catalog 挑 product_ids → `query_product(ids)` 全量加载完整 md
+  - [x] 政策：`query_policy()` 按需返回整个 `policies.md`（不切分 section）
+  - [x] 护栏约束：政策类问题必须走 `query_policy`，禁止 LLM 臆造（由 system prompt 硬约束）
 - [ ] **M5 · 意图路由**：轻量分类 → 派发
 - [ ] **M6 · 护栏（分层防御）**
   - [ ] 工具层鉴权：`initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截（`query_orders` 因入参不含 order_id，已在架构上消除越权面）
@@ -247,6 +249,8 @@ nana-agent/
 - **2026-04-21** · W1 第二个工具 `initiate_refund(user_id, order_id)` 完成：NOT_FOUND → UNAUTHORIZED → INVALID_STATE 三道校验，越权由工具层硬挡（分层防御硬规则层）；9 个单测覆盖 3 状态正常路径 + 幂等 + 越权 + schema 不变式；全工程 24/24 绿
 - **2026-04-21** · `query_policy()` 落地：无参整文件返回 `knowledge/policies.md`；3 个单测覆盖内容/入参形态/零参数 schema；全工程 27/27 绿
 - **2026-04-21** · `query_product(product_ids)` 落地：DB 字段 + md 描述融合，去重保序、部分不存在时 products + missing 分桶，frontmatter 剥离；9 个单测；全工程 37/37 绿
+- **2026-04-21** · 政策文件重写：退货规则从"签收日起 7 天无理由 + 15 天质量问题"简化为"**发货日起 7 天内可退**"统一规则；原规则依赖 DB 不存在的签收字段，会迫使 Agent 反问用户签收日期
+- **2026-04-21** · Catalog 落地（M4 首项）：`scripts/chat.py` 与 `scripts/smoke_agent.py` 的 system prompt 写死 P001/P002/P003 的 ID + 名称，LLM 可直接从名称/俗称映射到 product_id 再调 `query_product`；全工程 37/37 绿
 
 ---
 
@@ -295,6 +299,8 @@ nana-agent/
 | 2026-04-21 | `query_order(user_id, order_id)` → `query_orders(user_id)` | 客服真实场景下用户不记订单号；去掉 `order_id` 入参后跨用户枚举路径在架构上直接消失，越权防御示范迁移到 `initiate_refund` 更合适 |
 | 2026-04-21 | 砍掉 `track_logistics`，工具 6 → 5 | `query_orders` 已返回 status + shipped_at + days_since_shipped，物流追踪没有新增数据，仅是 LLM 侧的语言包装——LLM 自己能做，额外工具是非必要设计 |
 | 2026-04-21 | ReAct 循环在派发前硬覆盖 tool_call 的 `user_id` | session 上下文不应交给 LLM 决定；放在循环入口覆盖，任何工具都自动受益，且不需要每个工具各自防御；与未来工具层鉴权形成分层防御 |
+| 2026-04-21 | 退货规则基准改为"发货日 +7 天"，而非"签收日 +7 天无理由 / +15 天质量" | DB 没有签收字段；原规则会让 Agent 反问用户签收日期，破坏体验；统一以 shipped_at 为准，规则单一、trace 清晰 |
+| 2026-04-21 | Catalog 写死在 system prompt（ID + 名称），不做启动时 DB 查询 | 3 款商品且几乎不变，DB 查询是伪工程复杂度；只放 ID + 名称（不放价格/库存/描述），避免 LLM 引用 prompt 里的过期值——这些必须走 `query_product` 现查 |
 
 ---
 
