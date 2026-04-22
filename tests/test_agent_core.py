@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from agent.core import Agent
 from agent.tools._contract import ToolRegistry
+from agent.tools.escalate_to_human import ESCALATE_TO_HUMAN_SPEC
 from agent.tools.query_orders import QUERY_ORDERS_SPEC
 
 
@@ -177,6 +178,38 @@ def test_history_with_system_is_not_duplicated():
     assert len(systems) == 1
     # 沿用 history 里的 system，而不是覆盖成新的
     assert systems[0]["content"] == "ORIGINAL"
+
+
+def test_escalate_to_human_terminates_loop():
+    """escalate_to_human 被调后，循环硬切：final='已转接人工'、LLM 不再被调用。"""
+    call_count = {"n": 0}
+
+    def counting_chat(messages, tools=None, **_kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _fake_resp(
+                _FakeMsg(
+                    tool_calls=[_FakeToolCall("c1", "escalate_to_human", "{}")]
+                )
+            )
+        # 命中 escalate 后还被调第二次，说明硬切没生效
+        raise AssertionError("escalate 命中后不应再调 LLM")
+
+    agent = Agent(
+        registry=ToolRegistry([ESCALATE_TO_HUMAN_SPEC, QUERY_ORDERS_SPEC]),
+        system_prompt="",
+        chat_fn=counting_chat,
+    )
+
+    result = agent.run("给我转人工", user_id="U001")
+
+    assert result.final == "已转接人工"
+    assert call_count["n"] == 1
+    assert len(result.steps) == 1
+    inv = result.steps[0].invocations[0]
+    assert inv.name == "escalate_to_human"
+    assert inv.result["ok"] is True
+    assert inv.result["data"]["escalated"] is True
 
 
 def test_malformed_arguments_dispatched_as_invalid_input():

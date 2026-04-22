@@ -117,6 +117,13 @@ class Agent:
                     }
                 )
 
+            # 终止型工具：escalate_to_human 一旦被调，硬切对话，不再让 LLM 继续
+            # （当前只有一个终止型工具，按 name 匹配即可；将来多起来再抽 terminates 字段）
+            if any(inv.name == "escalate_to_human" for inv in step.invocations):
+                return RunResult(
+                    final="已转接人工", messages=messages, steps=steps
+                )
+
         return RunResult(final=None, messages=messages, steps=steps)
 
 

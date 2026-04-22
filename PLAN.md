@@ -120,7 +120,7 @@ turn_count: 12
   - [x] 数据结构：`Step` / `ToolInvocation` / `RunResult`
   - [x] 循环调度 + `max_steps` 熔断
   - [x] session 上下文硬覆盖：派发前强制把 `user_id` 改为会话归属，阻断 LLM 伪造
-- [~] **M2 · 工具层（5 个）**：**遵循 OpenAI function calling 规范**
+- [x] **M2 · 工具层（5 个）**：**遵循 OpenAI function calling 规范**
   - 每个工具提供标准 `{"type":"function","function":{"name","description","parameters":<JSON Schema>}}` 定义
   - 返回体统一为 JSON-serializable dict；错误用 `{"ok": false, "error_code", "message"}` 形态回传给 LLM
   - 用 Pydantic 校验入参，但对 LLM 暴露的 schema 以 OpenAI function calling 为准
@@ -128,7 +128,7 @@ turn_count: 12
   - [x] `initiate_refund(user_id, order_id)` 退换货发起：NOT_FOUND / UNAUTHORIZED / INVALID_STATE 三道校验，越权由工具层硬挡
   - [x] `query_product(product_ids)` 商品信息查询：DB 交易数据 + md 完整描述；去重保序、部分不存在时返回 products + missing
   - [x] `query_policy()` 政策查询：无参，返回整个 `policies.md` 文件
-  - [ ] `escalate_to_human` 转人工
+  - [x] `escalate_to_human()` 转人工：无参的终止型工具，循环在 `agent/core.py` 识别到调用后硬切对话，返回 `"已转接人工"`
 - [ ] **M3 · 两层记忆**（简化自原三层）
   - [ ] 短期：滚动窗口 + 超阈值时触发上下文压缩（LLM 摘要近期对话）
   - [ ] 长期：per-session 结构化摘要，`memory/sessions/{user_id}/*.md`；新会话载入最近 3–5 条
@@ -202,12 +202,12 @@ nana-agent/
 
 ## 7. 里程碑与当前进展
 
-**当前阶段**：**W2 进行中** —— 补 `escalate_to_human` + 启动 M3 两层记忆。
+**当前阶段**：**W2 进行中** —— M2 工具层 5/5 已齐；下一件是 M3 两层记忆。
 
 | 周 | 目标 | 状态 |
 |---|---|---|
 | **W1** | DB Schema + seed + ReAct 循环 + 工具契约 + 首批工具 | **[x] 超额完成**（4 工具 + catalog，见下） |
-| **W2** | 补齐第 5 工具 + 两层记忆 | **[~]** |
+| **W2** | 补齐第 5 工具 + 两层记忆 | **[~]**（工具齐，记忆未开工） |
 | **W3** | 意图路由 + qwen-plus 深度优化 | [ ] |
 | **W4** | 护栏补全（注入过滤 / 情绪感知）| [ ] |
 | **W5** | 评估体系（评测集 + 自动指标 + Judge + 消融 + 红队） | [ ] |
@@ -217,13 +217,12 @@ nana-agent/
 
 - **数据层**：SQLite schema + `seed.py`（2 用户 / 3 商品 / 10 订单含 3 异常，全量写死）+ `knowledge/products/*.md` + `knowledge/policies.md`（"发货日 +7 天"统一规则）
 - **循环 & 协议**：`agent/core.py` ReAct 骨架（`Step` / `ToolInvocation` / `RunResult` + `max_steps` 熔断 + 派发前 `user_id` 硬覆盖）；工具契约 `_contract.py`（OpenAI function calling schema + 统一错误返回）；qwen-plus client
-- **工具（4/5）**：`query_orders` / `query_product`（DB + md 融合）/ `query_policy` / `initiate_refund`（工具层三道校验，M6 工具层鉴权子项由此落地）
+- **工具（5/5）**：`query_orders` / `query_product`（DB + md 融合）/ `query_policy` / `initiate_refund`（工具层三道校验，M6 工具层鉴权子项由此落地）/ `escalate_to_human`（终止型，循环在 `agent/core.py` 按 name 识别后硬切返回"已转接人工"）
 - **M4 catalog**：两份 system prompt 写死 3 商品 ID + 名称
-- **测试**：37 pytest + `scripts/smoke_agent.py` 全绿；`scripts/chat.py` REPL 供人工测试
+- **测试**：41 pytest + `scripts/smoke_agent.py` 四场景全绿；`scripts/chat.py` REPL 供人工测试
 
 ### 下一步
 
-- `escalate_to_human` 工具（M2 收尾）
 - M3 两层记忆骨架：短期滚动窗口 + 长期 per-session md 摘要
 
 ---
@@ -259,6 +258,7 @@ nana-agent/
 | 8 | Catalog 写死在 system prompt（仅 ID + 名称，不含价格/库存/描述） | 3 款商品近乎不变，DB 查询是伪复杂度；价格/库存放 prompt 会诱导 LLM 引用过期值 |
 | 9 | 不落运行期 trace 表，原 M8/M9 观测性模块移除 | 评测阶段由 eval harness 现场采集 latency/token/cost 即足够；运行期全量 trace 系统 ROI 低 |
 | 10 | 种子数据全量写死（2 用户 / 3 商品 / 10 订单含 3 异常），无随机、无 md→DB 同步 | 规模极小且几乎不变，写死最省心；随机生成与同步逻辑都是伪复杂度 |
+| 11 | `escalate_to_human` 的终止语义在 Agent 循环里按 name 硬匹配，不抽 `ToolSpec.terminates` 字段 | YAGNI：当前只有一个终止型工具，通用化抽象待未来第二个出现再做；现在 3 行 if 比一套字段+调度更清晰 |
 
 ---
 
