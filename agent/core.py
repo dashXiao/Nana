@@ -9,8 +9,8 @@
 - `run()` 接受 exposed_tools / prompt_patch 做工具子集暴露 + 系统提示增强
 - `run_routed()` 编排「分类 → 策略 → fast_path 或 ReAct」整条链路
 
-不做的事（留给后续 module）：
-- Prompt 注入过滤 / 情绪感知（M6/M7·W4）
+Guardrails：`run_routed` 最前一道闸，规则命中注入则短路返回固定拒绝文案，
+不经过 router / LLM / 工具；详见 `agent/guardrails/`、PLAN §9 #22。
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from agent.guardrails import InjectionDetector
 from agent.llm import chat as default_chat
 from agent.memory.events import MemoryEvent
 from agent.memory.long_term import LongTermMemory
@@ -26,6 +27,11 @@ from agent.memory.short_term import ShortTermMemory
 from agent.tools._contract import ToolRegistry, ToolSpec
 
 ChatFn = Callable[..., Any]
+
+_INJECTION_REFUSAL = (
+    "抱歉，我只能帮您处理 NanaShop 的订单、商品、政策等客服问题，"
+    "这类请求我无法处理。"
+)
 
 
 @dataclass
@@ -75,6 +81,7 @@ class Agent:
         router: Any = None,
         short_term: ShortTermMemory | None = None,
         long_term: LongTermMemory | None = None,
+        injection_detector: InjectionDetector | None = None,
     ):
         self.registry = registry
         self.system_prompt = system_prompt
@@ -85,6 +92,9 @@ class Agent:
         # 记忆层可选：None 时 run_routed 跳过。谱系见 PLAN §9 #19。
         self._short_term = short_term
         self._long_term = long_term
+        # guardrails 默认开启——注入检测是 run_routed 每条消息都过的闸；
+        # 测试可注入替身关掉或伪造命中。
+        self._injection_detector = injection_detector or InjectionDetector()
         # 长期块会话内缓存，供每轮重注入——否则 patch 非空时 `_build_initial_messages`
         # 替换 messages[0] 会吞掉首轮嵌入的块（PLAN §9 #20）。
         self._lt_cache: dict[str, str] = {}
@@ -166,9 +176,9 @@ class Agent:
         user_id: str | None = None,
         history: list[dict] | None = None,
     ) -> RunResult:
-        """分类 → 策略 → fast_path 或带工具子集的 ReAct。
+        """guardrails → 记忆层 → 分类 → 策略 → fast_path 或带工具子集的 ReAct。
 
-        入口先跑记忆层（**先 load 后 compact 再进 ReAct**）：
+        0. guardrails：注入规则层命中 → 固定拒绝短路返回，不进 router / LLM / 工具
         1. 长期：若 history 为空且配了 long_term，按 user_id 读最近 3 段摘要，
            作为独立 system 块拼进新 history（仅冷启动该会话时触发）
         2. 短期：若配了 short_term，对 history 做 Summary-Buffer 压缩
@@ -182,6 +192,21 @@ class Agent:
             self._router = IntentRouter()
 
         memory_events: list[MemoryEvent] = []
+
+        # 层 0：guardrails 预检——注入命中即短路，不做分类 / 不进 ReAct / 不占人工
+        matched = self._injection_detector.detect(user_message)
+        if matched is not None:
+            memory_events.append(MemoryEvent("guardrail_injection", matched))
+            return RunResult(
+                final=_INJECTION_REFUSAL,
+                messages=[],
+                steps=[],
+                intent="injection",
+                route_path="guardrails",
+                confidence=1.0,
+                memory_events=memory_events,
+            )
+
         history, long_term_block = self._apply_memory_before_run(
             history=history, user_id=user_id, events=memory_events,
         )
