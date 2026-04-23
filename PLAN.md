@@ -4,7 +4,7 @@
 > 开工前读 §7（现状）+ §10（待定）；收工前更新 §7 与 §4 checkbox；有新决策追加 §9 一行。
 > 历史变更查 git log，不在本文件流水账。
 
-- **Last updated**: 2026-04-22
+- **Last updated**: 2026-04-23
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -101,7 +101,7 @@ user_id: U001
 
 - 会话结束（`/reset` / `/user` / `/quit` / 转人工）时 LLM 生成一段摘要 → 追加一节
 - 新会话冷启动时读文件，**只取最近 3 段**拼成一个 system 块，避免历史越堆越重
-- 由 `LongTermMemory` 类管理，谱系参见 §9 #19
+- 由 `LongTermMemory` 类管理，谱系参见 §9 #9
 
 ---
 
@@ -122,25 +122,25 @@ user_id: U001
   - [x] `query_product(product_ids)` 商品信息查询：DB 交易数据 + md 完整描述；去重保序、部分不存在时返回 products + missing
   - [x] `query_policy()` 政策查询：无参，返回整个 `policies.md` 文件
   - [x] `escalate_to_human()` 转人工：无参的终止型工具，循环在 `agent/core.py` 识别到调用后硬切对话，返回 `"已转接人工"`
-- [x] **M3 · 两层记忆**（简化自原三层；谱系参见 §9 #19）
+- [x] **M3 · 两层记忆**（简化自原三层；谱系参见 §9 #9）
   - [x] 短期 `ShortTermMemory`：Summary-Buffer Memory，用户轮数 >4 时把早期对话压成一条 system 摘要，保留末 1 轮
   - [x] 长期 `LongTermMemory`：per-user 单 md 文件（append-only），冷启动载入最近 3 段，本会话结束时按 `min_turns≥2` 门槛追加
   - [x] `MemoryEvent` 可观测：与 `route_path/confidence` 同构，回填到 `RunResult.memory_events`，REPL 与评测都能消费
 - [x] **M4 · 知识检索策略**（非 RAG）
-  - [x] Catalog 注入：仅 `product_id + 名称`（价格/库存/描述走工具，防引用过期值）；M5 后 catalog 已从 base 下沉到 `product_inquiry` patch（§9 #17）
+  - [x] Catalog 注入：仅 `product_id + 名称`（价格/库存/描述走工具，防引用过期值）；M5 后 catalog 已从 base 下沉到 `product_inquiry` patch（§9 #8）
   - [x] 商品：LLM 从 catalog 挑 `product_ids` → `query_product(ids)` 全量加载完整 md
   - [x] 政策：`query_policy()` 无参返回整个 `policies.md`（不切分 section），system 硬约束不得臆造
-- [x] **M5 · 意图路由**：分层漏斗 + `IntentPolicy` 策略表（7 意图），Framing A「config 派」（详见 §9 #12–#18）
+- [x] **M5 · 意图路由**：分层漏斗 + `IntentPolicy` 策略表（8 意图，含 `negative_emotion`），Framing A「config 派」（详见 §9 #7、#8、#10）
   - [x] 三层漏斗：规则 0 LLM / LLM 一次结构化 JSON / 低置信度 → `other` 兜底；分类器 prompt 带"多意图→other"负样本
   - [x] `IntentPolicy(exposed_tools, prompt_patch, fast_path_tool)` 绑定执行策略；`Agent.run_routed()` 编排分类 → 策略 → fast_path 或带工具子集的 ReAct
-  - [x] `RunResult` 带 `intent/route_path/confidence` 供 W5 分桶；escalation 规则命中走 fast_path 零 LLM 成本
-  - [x] Slim base + 资料/规则按需挂到 patch（base 仅身份+格式；catalog 挂 product_inquiry；规则挂各意图；`other` 兜底承载全量规则）
+  - [x] `RunResult` 带 `intent/route_path/confidence` 供 W5 分桶；`escalation` / `negative_emotion` 规则命中都走 fast_path，0 LLM 成本
+  - [x] Slim base + 资料/规则按需挂到 patch（base 仅身份+格式；catalog 通过 `_CATALOG_SNIPPET` 常量挂 `product_inquiry` + `other`；规则挂各意图；`other` 兜底承载全量规则）
 - [x] **M6 · 护栏（分层防御）**
   - [x] 工具层鉴权：`initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截（`query_orders` 因入参不含 order_id，已在架构上消除越权面）
-  - [x] Prompt 注入过滤：`agent/guardrails/injection.py` 规则层三类正则（角色劫持 / 系统提示泄露 / 越狱关键词），`run_routed` 预检命中即短路返回固定拒绝文案（§9 #22）
+  - [x] Prompt 注入过滤：`agent/guardrails/injection.py` 规则层三类正则（角色劫持 / 系统提示泄露 / 越狱关键词），`run_routed` 预检命中即短路返回固定拒绝文案（§9 #10）
   - [x] 关键信息（价格/库存/政策）禁止 LLM 臆造，必须走工具（由 system prompt 强约束）
   - [x] 退货流程安全点不靠 FSM，由 system prompt 引导（必须确认才执行）+ 工具层鉴权双层兜底
-- [x] **M7 · 情绪感知 + 升级**：作为独立 intent `negative_emotion` 并入路由漏斗（§9 #21）
+- [x] **M7 · 情绪感知 + 升级**：作为独立 intent `negative_emotion` 并入路由漏斗（§9 #10）
   - [x] 规则层 12 词正则（垃圾/骗子/气死/投诉 等），内容匹配（search）而非整串
   - [x] LLM 分类器 prompt 扩 8 标签，新增 `negative_emotion` 语义与负样本
   - [x] 与 `escalation` 共用 fast_path（`escalate_to_human` + "已转接人工"），intent 独立供 W5 分桶
@@ -149,7 +149,7 @@ user_id: U001
 
 ## 5. 评估体系（最大亮点）
 
-- [ ] **E1 · 评测集**：80–100 条样本，覆盖 5 个 Fixture 剧本
+- [ ] **E1 · 评测集**：80–100 条样本，覆盖 6 个 Fixture 剧本
   - [ ] 愤怒的催单客户（情绪识别 + 升级）
   - [ ] 退货流程（多工具编排：查订单 → 确认 → 执行）
   - [ ] 政策咨询新客（`query_policy`，"几天内可以退"）
@@ -183,7 +183,7 @@ nana-agent/
 │   ├── router.py            # 意图路由
 │   ├── tools/               # 5 个工具，一工具一文件；OpenAI function calling schema
 │   ├── memory/              # 短期 Summary-Buffer / 长期 per-user 单 md
-│   └── guardrails/          # Prompt 注入过滤 / 情绪识别
+│   └── guardrails/          # Prompt 注入过滤（情绪识别并入 router，§9 #10）
 ├── knowledge/
 │   ├── policies.md          # 全站统一政策（退换货/配送/FAQ）
 │   └── products/            # 每商品一 md，文件名即 product_id
@@ -202,14 +202,14 @@ nana-agent/
 
 ## 7. 里程碑与当前进展
 
-**当前阶段**：**W3 进行中** —— M3 两层记忆骨架已落（§9 #19）；接下来做 qwen-plus 深度优化 & 进入 W4 护栏。
+**当前阶段**：**Agent 功能闭环完成**（M1–M7 全部 [x]，§4），即将进入 **W5 评估体系**。
 
 | 周 | 目标 | 状态 |
 |---|---|---|
 | **W1** | DB Schema + seed + ReAct 循环 + 工具契约 + 首批工具 | **[x] 超额完成**（4 工具 + catalog，见下） |
 | **W2** | 补齐第 5 工具 + 意图路由 | **[x]** |
-| **W3** | 两层记忆 + qwen-plus 深度优化 | **[~]** 记忆完，优化待续 |
-| **W4** | 护栏补全（注入过滤 / 情绪感知）| [ ] |
+| **W3** | 两层记忆 | **[x]**（原"qwen-plus 深度优化"口袋项砍掉，相关 prompt 调校已在 §9 #8/#9 零散落地；消融对比并入 W5 E4） |
+| **W4** | 护栏补全（注入过滤 / 情绪感知）| **[x]** |
 | **W5** | 评估体系（评测集 + 自动指标 + Judge + 消融 + 红队） | [ ] |
 | **W6** | Gradio Demo + Docker + README + 技术博客 | [ ] |
 
@@ -218,17 +218,16 @@ nana-agent/
 - **数据层**：SQLite schema + `seed.py`（2 用户 / 3 商品 / 10 订单含 3 异常，全量写死）+ `knowledge/products/*.md` + `knowledge/policies.md`（"发货日 +7 天"统一规则）
 - **骨架**：`agent/core.py` ReAct 循环（`Step`/`ToolInvocation`/`RunResult` + `max_steps` + 派发前 `user_id` 硬覆盖）；工具契约 `_contract.py`（OpenAI function calling + 统一错误返回）；qwen-plus client（env 必填，模块级 `MODEL/client`）
 - **工具 5/5**：`query_orders` / `query_product`（DB+md 融合）/ `query_policy` / `initiate_refund`（三道校验）/ `escalate_to_human`（终止型，按 name 硬切返回"已转接人工"）
-- **M5 意图路由**：`agent/router.py` 漏斗分类器 + 7 意图 `POLICY_MAP` + `Agent.run_routed()` 编排；slim base + 资料/规则按意图下沉到 patch（`other` 兜底承载全量规则）；escalation 走 fast_path
+- **M5 意图路由**：`agent/router.py` 漏斗分类器 + 8 意图 `POLICY_MAP`（含 `negative_emotion`）+ `Agent.run_routed()` 编排；slim base + 资料/规则按意图下沉到 patch（`other` 兜底承载全量规则；catalog 通过 `_CATALOG_SNIPPET` 挂 `product_inquiry` + `other`）；`escalation` / `negative_emotion` 都走 fast_path
 - **M3 两层记忆**：`agent/memory/{events,short_term,long_term}.py`；`run_routed` 入口先压后跑；`RunResult.memory_events` 可观测；REPL 在 `/reset`/`/user`/`/quit`/ 转人工 时 `save_session`
-- **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #21）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
+- **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #10）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
 - **M6 护栏**：`agent/guardrails/injection.py` 规则层预检（三类：角色劫持 / 提示泄露 / 越狱关键词；正序 + 中文倒装），`run_routed` 最前一道闸；命中 `intent="injection"` / `route_path="guardrails"` / 固定拒绝文案、0 LLM
 - **测试 & 人工**：126 pytest 全绿；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
 
 ### 下一步
 
-- W5 评测体系：E1 评测集建立（80–100 条样本）、E2 自动指标 harness、E3 LLM-as-Judge
+- W5 评测体系：E1 评测集建立（80–100 条样本，覆盖 §5 的 6 个 Fixture 剧本）、E2 自动指标 harness、E3 LLM-as-Judge、E4 消融（记忆/检索/组件三路对比）、E5 红队
 - 红队数据出来后，给 `agent/guardrails/injection.py` 加 LLM 分类兜底层（规则漏召回补刀）
-- qwen-plus 深度优化：压缩摘要 prompt 调校、消融对比无记忆基线
 
 ---
 
@@ -253,28 +252,16 @@ nana-agent/
 
 | # | 决策 | 理由 |
 |---|---|---|
-| 1 | LLM 单模型 qwen-plus + 自研 ReAct 循环 + 工具统一 OpenAI function calling schema | 聚焦原理展现；schema 通用便于跨 LLM 复用；不用 LangChain/LangGraph 以免被抽象遮蔽细节 |
-| 2 | 去向量 RAG、去语义记忆、去 Chroma —— 商品走 catalog+全量加载、政策整文档返回、记忆走 md 摘要 | 数据规模 < 15K tokens + 任务导向短 horizon，向量过度工程化；技术栈收敛到 SQLite + 文件系统，决策本身即简历亮点 |
-| 3 | 退货核心安全点改**工具层鉴权**（分层防御），不做 FSM 状态机 | 无论对话路径如何都拦得住越权；简历叙事为"tool 即 security boundary"，比 FSM 更主流且更灵活 |
-| 4 | ReAct 派发前硬覆盖 tool_call 的 `user_id`（循环入口统一哨卡） | session 上下文不交给 LLM 决定；任何工具自动受益，与工具层鉴权形成分层防御 |
-| 5 | 工具预算 5：`query_orders / query_product / query_policy / initiate_refund / escalate_to_human` | 去 `recommend_products`（与客服核心弱相关）、去 `track_logistics`（数据已在 query_orders 内）；`query_order` 改 `query_orders`（用户不记订单号，同时消除跨用户枚举面）|
-| 6 | 订单状态枚举 `pending/shipped/delivered/refunded` + `shipped_at` 时间戳 | 存时间戳而非"X 天"避免过期；退款过渡态由对话层管，不污染 schema |
-| 7 | 退货规则基准改为**发货日 +7 天**（原方案为"签收日 +7 天无理由 / 15 天质量"）| DB 没有签收字段；原规则会让 Agent 反问用户签收日期，体验破坏 |
-| 8 | Catalog 写死在 system prompt（仅 ID + 名称，不含价格/库存/描述） | 3 款商品近乎不变，DB 查询是伪复杂度；价格/库存放 prompt 会诱导 LLM 引用过期值 |
-| 9 | 不落运行期 trace 表，原 M8/M9 观测性模块移除 | 评测阶段由 eval harness 现场采集 latency/token/cost 即足够；运行期全量 trace 系统 ROI 低 |
-| 10 | 种子数据全量写死（2 用户 / 3 商品 / 10 订单含 3 异常），无随机、无 md→DB 同步 | 规模极小且几乎不变，写死最省心；随机生成与同步逻辑都是伪复杂度 |
-| 11 | `escalate_to_human` 的终止语义在 Agent 循环里按 name 硬匹配，不抽 `ToolSpec.terminates` 字段 | YAGNI：当前只有一个终止型工具，通用化抽象待未来第二个出现再做；现在 3 行 if 比一套字段+调度更清晰 |
-| 12 | 意图路由走 **Framing A「config 派」**（一个 Agent + 配置表），不拆 sub-agent + orchestrator（Framing B） | 7 个意图的 prompt_patch 本质同构（共享基座 + 小段专属提示），硬包装成 sub-agent 会被面试官识破是 cosmetic；A 的 `(exposed_tools, prompt_patch, fast_path_tool)` 元组未来可直接重命名为 SpecialistAgent 升级到 B，保留路径无损耗 |
-| 13 | 路由用**独立一次 LLM 分类调用**（结构化 JSON 输出），不做 `pick_intent` 伪工具混进 ReAct | 独立调用语义清晰、可测、可换模型；混进 ReAct 会让"选意图"和"选动作"耦合，评测分桶也会失真 |
-| 14 | `chitchat` 意图不做 fast_path 模板回复，而是 `exposed_tools=()` 仍让 LLM 自然生成 | 模板回"您好！"应对"谢谢你"会很怪；零工具既省 tokens 又杜绝 LLM 对寒暄意外调 `query_orders`，自然度 & 安全性双赢 |
-| 15 | 带 `prompt_patch` 的多轮 run：**覆盖** `messages[0]` 的 system，而非沿用 history 原 system | 不同轮可能命中不同意图，patch 必须随轮更新；patch 为空时仍保持"沿用历史 system"的旧行为，不破坏既有测试 |
-| 16 | Slim base + 规则下沉：base system prompt 只含身份 + catalog + 格式（~130 字符），原 6 条行为规则全部拆到对应 `POLICY_MAP[intent].prompt_patch`，`other` 兜底 patch 承载完整规则集 | 原长版 base 已包含所有意图规则，patch 只是冗余强调；下沉后 LLM 每轮只看到与当前意图相关的规则，特定意图路径 tokens 降 ~80%；patch 真实承担路由价值（不再是装饰），同时"routing 不只裁工具集，还裁行为约束"成为简历叙事 |
-| 17 | 进一步下沉：商品 catalog 从 base 挪到 `product_inquiry` 的 patch，base 砍到身份 + 格式两行（~30 字符） | 只有商品咨询意图需要把"蓝牙耳机"映射到 `product_id`；订单/政策/退款/闲聊看到 catalog 是纯噪声，放 base 相当于每轮多塞 3 行无用资料。"资料按意图需用即挂"与"规则按意图需用即挂"对称，收敛路由心智模型 |
-| 18 | 分类器 prompt 加多意图→`other` 的负样本对照（"订单+商品""订单+政策""商品+政策"等 4 条样例），并在单意图标签描述前加"**仅**"字样 | 原 "多意图混合" 规则只一行描述、无样例，qwen-plus 遇"查商品和我的订单"会勉强挑主意图（实测 conf=0.65 命中 order_query，裁掉了 query_product 导致另一维度答不了）。加样例后同一句稳定落 `other` conf=0.98，两把工具都被调到。启示："跨维度 → 兜底" 规则必须用负样本锚定，仅靠抽象描述 LLM 会走捷径 |
-| 19 | 两层记忆谱系对照：**短期 = Summary-Buffer（LangChain `ConversationSummaryBufferMemory` / Claude Code auto-compact 谱系）**；**长期 = per-user append-only md（ChatGPT Memory / MemGPT / Letta 谱系）**。入口按"长期 load → 短期 compact → ReAct"顺序；用户轮数 ≥2 才 `save_session`；`load_block` 只取最近 3 段；记忆事件随 `RunResult.memory_events` 回传（非副作用回调）| 两套谱系是主流、各有其位：短期处理会话内膨胀，长期处理老客跨会话召回。Claude Code 是"会话级无状态"——不等于否定长期记忆，而是电商场景有"老客回头"天然诉求，合理场景适配。`min_turns=2` 防 1 轮闲聊污染档案；`最近 3 段` 防历史越堆越重（可供 W5 消融对比）；`MemoryEvent` 与 `route_path/confidence` 同构，保持"可观测=数据回传"的统一心智 |
-| 20 | 长期记忆在 Agent 里用 `_lt_cache[user_id]` 做**会话内缓存 + 每轮重注入**，不是"只在第 1 轮 load 一次，之后靠 history 携带" | 续轮 `_build_initial_messages` 在 patch 非空时会替换 `messages[0]` 成 `base + patch`，首轮嵌入的长期块会被吞掉。冷启动 load 后缓存，续轮作为 `memory_block` 参数重注入到新 system 里，抵消替换路径。这与 ChatGPT Memory / Claude Code `CLAUDE.md` / Cursor `.cursorrules` 的"会话启动读一次、期内稳定"契约一致——主流 agent 共识 |
-| 21 | 情绪感知不做独立 guardrails 层，而是作为独立 intent `negative_emotion` 并入路由漏斗，与 `escalation` 共用 fast_path 工具但 intent 分桶 | 两者的 action 都是"转人工"，行为同构；但触发来源不同——`escalation` 是用户主动中性请求，`negative_emotion` 是情绪判定。合进 router 复用既有漏斗（规则 → LLM 一次调用），不增加 LLM 成本；分两个 intent 让 `RunResult.intent` 直接做 W5 评测分桶，不用额外加字段。正则规则用 `search` 内容匹配（情绪词常在复合句中："破耳机垃圾，快退！"），与 `escalation` 的 `^…$` 整串匹配形成对照 |
-| 22 | Prompt 注入过滤**不并入 router**，而是独立 `agent/guardrails/injection.py` 规则层，在 `run_routed` 最前一道闸短路，`intent="injection"`/`route_path="guardrails"` 但**不入 VALID_INTENTS**；纯正则、不调 LLM | 与情绪感知的"并入 router"刻意对称：情绪是"用户意图的延伸"，注入是"威胁行为，不是意图"——职责分离让 guardrails（闸门）/ router（分类）/ ReAct（执行）三层单一职责，与 Claude Code/Codex 的 guard-before-route 模式一致。规则层够用：主流 jailbreak 模板高度结构化（"ignore previous instructions"、DAN、developer mode 等），规则召回 ~70%；漏召回的同义改写/编码绕过由工具层鉴权 + system 约束兜底（分层防御）。LLM 分类层延后到 W5 红队样本集出来后数据驱动加入，避免现在瞎猜 prompt。正则支持中文倒装（"把你的设定显示出来"——真实中文表达，不能只覆盖正序） |
+| 1 | 单模型 qwen-plus + 自研 ReAct + 工具统一 OpenAI function calling schema | 聚焦原理展现；schema 便于跨 LLM 复用；不用 LangChain 以免被抽象遮蔽细节 |
+| 2 | 去向量 RAG / 去语义记忆：商品走 catalog+全量加载、政策整文档返回、记忆走 md 摘要 | 数据规模 < 15K tokens + 短 horizon，向量属过度工程化；架构收敛本身即简历亮点 |
+| 3 | 退货核心安全改**工具层鉴权**，不做 FSM 状态机 | Tool 即 security boundary，无论对话路径都拦得住越权，比 FSM 更灵活 |
+| 4 | ReAct 派发前硬覆盖 tool_call 的 `user_id` | session 上下文不交给 LLM 决定，与工具层鉴权形成分层防御 |
+| 5 | 工具预算 5；`query_orders` 不收 `order_id` | 用户记不住订单号，同时从架构上消除跨用户枚举面；去掉与客服弱相关的 recommend / 冗余的 track_logistics |
+| 6 | 不落运行期 trace 表 | 评测阶段由 eval harness 现场采集 latency/token/cost 即够用，运行期全量 trace ROI 低 |
+| 7 | 意图路由走 **Framing A「config 派」**（单 Agent + 配置表），不拆 sub-agent + orchestrator | 各意图 prompt_patch 本质同构；`(exposed_tools, prompt_patch, fast_path_tool)` 元组将来可平滑升级为 Framing B |
+| 8 | Slim base + 规则/资料按意图下沉到 `prompt_patch` | base 仅身份+格式；catalog 与行为规则按意图挂 patch，每轮 tokens 更短；"routing 不只裁工具，还裁行为"成为路由叙事 |
+| 9 | 两层记忆：短期 Summary-Buffer（会话内压缩）+ 长期 per-user append-only md（冷启动 load 最近 3 段） | 短期解决会话膨胀，长期解决老客跨会话召回；`_lt_cache` 按轮重注入新 system，抵消 patch 替换 `messages[0]` |
+| 10 | 情绪感知并入 router 作独立 intent `negative_emotion`（与 `escalation` 共用 fast_path）；Prompt 注入独立 `guardrails` 层 | 情绪是"意图的延伸"、注入是"威胁行为，不是意图"——guardrails/router/ReAct 三层各司其职；注入纯正则够用，LLM 兜底延后到 W5 红队数据出来再加 |
 
 ---
 
@@ -284,7 +271,7 @@ nana-agent/
 - [ ] 红队攻击用例库来源（自己设计 vs 参考公开数据集）
 - [ ] 退款流程对"边界日期"订单的处理（例如发货第 7 天）是否需要额外 prompt 话术引导
 - [ ] 路由 confidence 阈值 0.6 是凭经验拍的，W5 用真实样本标注后再回调
-- [ ] 分类 LLM 的 prompt 已加"多意图→other"负样本（§9 #18）；单意图误分率仍待 W5 真实标注后再迭代 few-shot
+- [ ] 分类 LLM 的 prompt 已加"多意图→other"负样本；单意图误分率仍待 W5 真实标注后再迭代 few-shot
 - [ ] 意图粒度：`order_query` 是否拆"物流进度" vs "状态确认"、`refund_request` 是否独立出"已发货 vs 未发货"子类——视 W5 分桶数据决定
 - [ ] 长期记忆 **合并/淘汰策略**：当前 per-user md 会无限 append，`load_block` 靠只取最近 3 段兜住。超活跃用户若累计几十段，老段落永远进不了冷启动上下文——W5 之前定夺是否做"每 N 段 → 合并成一段元摘要"（对齐 MemGPT/Letta 的 memory consolidation），还是保持 append-only 让 W5 消融数据说话
 
