@@ -42,6 +42,15 @@ BASE_SYSTEM_PROMPT = """\
 你是 NanaShop 的电商客服助手。回复使用简洁中文。
 """
 
+# 商品 catalog：product_inquiry 与 other（跨维度含商品）都要把"耳机/手表/椅子"
+# 之类的口语映射到 product_id；抽成常量避免两处不同步。
+_CATALOG_SNIPPET = (
+    "全站在售商品（固定 3 款，用户用名称或俗称提问时对照下表映射到对应 product_id）：\n"
+    "- P001：无线蓝牙耳机 X1\n"
+    "- P002：智能手表 Pro\n"
+    "- P003：人体工学办公椅\n"
+)
+
 
 VALID_INTENTS: frozenset[str] = frozenset(
     {
@@ -114,11 +123,7 @@ POLICY_MAP: dict[str, IntentPolicy] = {
     "product_inquiry": IntentPolicy(
         exposed_tools=("query_product",),
         prompt_patch=(
-            "当前意图是商品咨询。全站在售商品（固定 3 款，用户用名称或俗称提问时"
-            "对照下表映射到对应 product_id）：\n"
-            "- P001：无线蓝牙耳机 X1\n"
-            "- P002：智能手表 Pro\n"
-            "- P003：人体工学办公椅\n"
+            "当前意图是商品咨询。" + _CATALOG_SNIPPET +
             "先把用户所指商品映射到 product_ids，再调 query_product 获取详情；"
             "不得凭记忆回答价格 / 库存 / 参数。"
         ),
@@ -143,6 +148,7 @@ POLICY_MAP: dict[str, IntentPolicy] = {
     "other": IntentPolicy(
         exposed_tools=None,  # 降级兜底：暴露全部工具
         prompt_patch=(
+            _CATALOG_SNIPPET +
             "当前意图不明确或跨多个场景。请遵循以下通用规则：\n"
             "1. 用户询问自己订单时必须调 query_orders，不要臆造订单号或状态。\n"
             "2. 涉及价格 / 库存 / 商品参数，必须调 query_product，不得凭记忆。\n"
