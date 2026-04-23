@@ -437,3 +437,209 @@ def test_malformed_arguments_dispatched_as_invalid_input():
     # 具体取决于解析分支。当前实现是 __raw__ 被丢进 args，但 user_id 被覆盖后
     # Pydantic 会忽略未知字段 → 调用成功。这条 case 主要验证"不抛异常"。
     assert "ok" in inv.result
+
+
+# ============ 记忆层集成 ============
+
+
+class _StubShortTerm:
+    """短期记忆替身：记录被调次数，按预置规则决定是否"压"。
+
+    真实 ShortTermMemory 压缩后结构是 [原 system, 摘要 system, 尾部对话]——
+    stub 照此形态，确保后续 _build_initial_messages 的 messages[0] 替换逻辑
+    能保留住摘要 system（在 [1] 位置）。
+    """
+
+    def __init__(self, should_compact: bool = False):
+        self.calls = 0
+        self._should_compact = should_compact
+
+    def maybe_compact(self, messages, events):
+        from agent.memory.events import MemoryEvent
+
+        self.calls += 1
+        if self._should_compact:
+            events.append(MemoryEvent(kind="compress", detail="短期摘要X"))
+            existing_system = [m for m in messages if m.get("role") == "system"]
+            summary = {"role": "system", "content": "[早期对话摘要]\n短期摘要X"}
+            return existing_system + [summary, messages[-1]]
+        return list(messages)
+
+
+class _StubLongTerm:
+    """长期记忆替身：load 返回预置块，save 记录被调次数。"""
+
+    def __init__(self, block: str = ""):
+        self.loaded = 0
+        self.saved = 0
+        self._block = block
+
+    def load_block(self, user_id, events):
+        from agent.memory.events import MemoryEvent
+
+        self.loaded += 1
+        if self._block:
+            events.append(MemoryEvent(kind="load_long_term", detail="载入 1 段"))
+        else:
+            events.append(MemoryEvent(kind="load_long_term", detail="首次对话，无历史记忆"))
+        return self._block
+
+    def save_session(self, user_id, messages, events):
+        from agent.memory.events import MemoryEvent
+
+        self.saved += 1
+        events.append(MemoryEvent(kind="save_long_term", detail="写入 1 段"))
+
+
+def test_run_routed_without_memory_layers_is_backward_compatible():
+    """不配记忆层时 run_routed 行为完全不变，memory_events 为空。"""
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="BASE",
+        chat_fn=_scripted_chat([_FakeMsg(content="您好！")]),
+        router=_StubRouter(IntentDecision("chitchat", 1.0, "rules")),
+    )
+
+    result = agent.run_routed("你好", user_id="U001")
+
+    assert result.memory_events == []
+    assert result.final == "您好！"
+
+
+def test_run_routed_cold_start_loads_long_term_block_into_system():
+    """history=None + long_term 配了 → load_block 被调一次，块拼进 system。"""
+    long_term = _StubLongTerm(block="[长期记忆 · 最近 1 次会话摘要]\n用户上次问过 O001")
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["messages"] = list(messages)
+        return _fake_resp(_FakeMsg(content="ok"))
+
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="BASE",
+        chat_fn=capturing_chat,
+        router=_StubRouter(IntentDecision("order_query", 0.9, "llm")),
+        long_term=long_term,
+    )
+
+    result = agent.run_routed("我的订单", user_id="U001")
+
+    assert long_term.loaded == 1
+    # system 条目中至少有一条包含长期记忆块
+    systems = [m for m in captured["messages"] if m.get("role") == "system"]
+    assert any("长期记忆" in s["content"] for s in systems)
+    # 事件回填
+    kinds = [e.kind for e in result.memory_events]
+    assert "load_long_term" in kinds
+
+
+def test_run_routed_with_existing_history_does_not_reload_long_term():
+    """history 非 None → 视为同一会话持续，不重读长期文件。"""
+    long_term = _StubLongTerm(block="不该被使用")
+    prior = [
+        {"role": "system", "content": "ORIGINAL"},
+        {"role": "user", "content": "上一轮"},
+        {"role": "assistant", "content": "上一轮答复"},
+    ]
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="BASE",
+        chat_fn=_scripted_chat([_FakeMsg(content="ok")]),
+        router=_StubRouter(IntentDecision("chitchat", 1.0, "rules")),
+        long_term=long_term,
+    )
+
+    agent.run_routed("这一轮", user_id="U001", history=prior)
+
+    assert long_term.loaded == 0
+
+
+def test_run_routed_triggers_short_term_compact_and_records_event():
+    """短期触发压缩时，chat_fn 收到的 messages 已是压缩后形态，事件被记录。"""
+    short_term = _StubShortTerm(should_compact=True)
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **_kwargs):
+        captured["messages"] = list(messages)
+        return _fake_resp(_FakeMsg(content="ok"))
+
+    prior = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "旧1"},
+        {"role": "assistant", "content": "答1"},
+        {"role": "user", "content": "旧2"},
+        {"role": "assistant", "content": "答2"},
+    ]
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="BASE",
+        chat_fn=capturing_chat,
+        router=_StubRouter(IntentDecision("chitchat", 1.0, "rules")),
+        short_term=short_term,
+    )
+
+    result = agent.run_routed("新一轮", user_id="U001", history=prior)
+
+    assert short_term.calls == 1
+    # messages 里出现"[早期对话摘要]"前缀的 system
+    systems = [m for m in captured["messages"] if m.get("role") == "system"]
+    assert any(s["content"].startswith("[早期对话摘要]") for s in systems)
+    # 事件
+    kinds = [e.kind for e in result.memory_events]
+    assert "compress" in kinds
+
+
+def test_save_long_term_delegates_to_long_term_instance():
+    long_term = _StubLongTerm()
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="BASE",
+        chat_fn=_scripted_chat([]),
+        long_term=long_term,
+    )
+
+    events = agent.save_long_term(
+        "U001",
+        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}],
+    )
+
+    assert long_term.saved == 1
+    assert len(events) == 1
+    assert events[0].kind == "save_long_term"
+
+
+def test_save_long_term_noop_without_long_term_or_empty_messages():
+    """未配 long_term 或 messages 为空 → 返回空 events，不炸错。"""
+    agent_no_mem = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="",
+        chat_fn=_scripted_chat([]),
+    )
+    assert agent_no_mem.save_long_term("U001", [{"role": "user", "content": "x"}]) == []
+
+    agent_with_mem = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="",
+        chat_fn=_scripted_chat([]),
+        long_term=_StubLongTerm(),
+    )
+    assert agent_with_mem.save_long_term("U001", []) == []
+
+
+def test_fast_path_also_carries_memory_events():
+    """escalation 走 fast_path 也要回填 memory_events（冷启动的 load 事件）。"""
+    long_term = _StubLongTerm(block="")  # 冷启动但文件为空
+    agent = Agent(
+        registry=ToolRegistry([ESCALATE_TO_HUMAN_SPEC]),
+        system_prompt="sys",
+        chat_fn=_scripted_chat([]),  # 不会被调
+        router=_StubRouter(IntentDecision("escalation", 1.0, "rules")),
+        long_term=long_term,
+    )
+
+    result = agent.run_routed("转人工", user_id="U001")
+
+    assert result.final == "已转接人工"
+    kinds = [e.kind for e in result.memory_events]
+    assert "load_long_term" in kinds

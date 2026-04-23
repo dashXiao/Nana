@@ -2,14 +2,14 @@
 
 跑法：uv run python scripts/chat.py
 命令：
-  /quit        退出
-  /reset       清空本轮会话历史（重开一个会话，但不 reseed DB）
-  /user U002   切到 U002（同时清空历史，避免跨用户串话）
+  /quit        退出（会把当前会话写入长期记忆）
+  /reset       清空本轮会话历史（重开一个会话，但不 reseed DB；写入长期记忆）
+  /user U002   切到 U002（同时清空历史，避免跨用户串话；写入长期记忆）
   /tools       列出当前注册的工具
   /help        显示本帮助
 
 启动时会 seed 一次，保证 DB 是确定的初始状态。
-每次 LLM 调工具都会打一行 `[tool] name(args) → 摘要`，方便你肉眼审查路径。
+每轮按"路由 → 暴露工具 → system → 记忆事件 → 工具调用"顺序打印，便于肉眼审查。
 """
 
 from __future__ import annotations
@@ -32,6 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.core import Agent, RunResult  # noqa: E402
 from agent.llm import MODEL  # noqa: E402
+from agent.memory.long_term import LongTermMemory  # noqa: E402
+from agent.memory.short_term import ShortTermMemory  # noqa: E402
 from agent.router import BASE_SYSTEM_PROMPT, POLICY_MAP  # noqa: E402
 from agent.tools._contract import ToolRegistry  # noqa: E402
 from agent.tools.escalate_to_human import ESCALATE_TO_HUMAN_SPEC  # noqa: E402
@@ -74,11 +76,8 @@ def _tool_summary(inv_result: dict) -> str:
 
 
 def _print_trace(result: RunResult) -> None:
-    """打印本轮路由决策 + LLM 真正看到的 system + 工具子集 + 工具调用。
-
-    每轮都把 messages[0] 的 system 完整打出来，肉眼确认：
-    - 意图命中后 prompt_patch 是否真的被追加到 system 末尾
-    - 不同意图下 system 是否随之变化（不是一直用兜底）
+    """按"输入→处理→输出"数据流打印本轮轨迹：
+    route → exposed_tools → memory events → system → 工具调用。
     """
     print(
         f"  [route] {result.route_path}:{result.intent} "
@@ -97,6 +96,12 @@ def _print_trace(result: RunResult) -> None:
     else:
         tools_display = ", ".join(policy.exposed_tools)
     print(f"  [exposed_tools] {tools_display}")
+
+    # 记忆事件：长期 load / 短期 compress 都在这里冒泡；肉眼确认压缩/加载真的发生
+    for ev in result.memory_events:
+        # detail 可能含换行（尤其 compress 带完整摘要文本），压成单行更易读
+        detail = ev.detail.replace("\n", " ")
+        print(f"  [memory] {ev.kind}: {detail}")
 
     # fast_path 绕 LLM，没有 system 调用可打；其他路径打完整 system
     if policy is not None and policy.fast_path_tool is not None:
@@ -118,9 +123,9 @@ def _print_trace(result: RunResult) -> None:
 def _print_help() -> None:
     print(
         "可用命令：\n"
-        "  /quit        退出\n"
-        "  /reset       清空本轮会话历史\n"
-        "  /user U00X   切到指定用户（同时清空历史）\n"
+        "  /quit        退出（会话写入长期记忆）\n"
+        "  /reset       清空本轮会话历史（会话写入长期记忆）\n"
+        "  /user U00X   切到指定用户（同时清空历史 + 写入长期记忆）\n"
         "  /tools       列出注册的工具\n"
         "  /help        显示本帮助\n"
     )
@@ -132,6 +137,18 @@ def _print_tools(registry: ToolRegistry) -> None:
         print(f"  · {fn['name']} — {fn['description'][:60]}...")
 
 
+def _flush_session_to_long_term(
+    agent: Agent, user_id: str, history: list[dict] | None
+) -> None:
+    """会话切换/退出时把当前历史写回长期记忆，并打印写入事件。"""
+    if not history:
+        return
+    events = agent.save_long_term(user_id, history)
+    for ev in events:
+        detail = ev.detail.replace("\n", " ")
+        print(f"  [memory] {ev.kind}: {detail}")
+
+
 def run() -> None:
     print(f"=== NanaShop Agent REPL · model: {MODEL} ===")
     print("启动时先 seed 一次，确保初始状态干净...")
@@ -139,7 +156,17 @@ def run() -> None:
     print()
 
     registry = ToolRegistry(TOOLS)
-    agent = Agent(registry=registry, system_prompt=SYSTEM_PROMPT, max_steps=6)
+    # 短期：Summary-Buffer，用户轮数 >4 时把早期压成一段 system 摘要，保留末 1 轮
+    # 长期：per-user md，冷启动载入最近 3 段，本会话结束时追加一段
+    short_term = ShortTermMemory(max_rounds=4, keep_recent=1)
+    long_term = LongTermMemory()
+    agent = Agent(
+        registry=registry,
+        system_prompt=SYSTEM_PROMPT,
+        max_steps=6,
+        short_term=short_term,
+        long_term=long_term,
+    )
 
     user_id = "U001"
     history: list[dict] | None = None
@@ -150,7 +177,9 @@ def run() -> None:
         try:
             line = input(f"[{user_id}] > ").strip()
         except (KeyboardInterrupt, EOFError):
-            print("\n再见。")
+            print()
+            _flush_session_to_long_term(agent, user_id, history)
+            print("再见。")
             return
 
         if not line:
@@ -158,14 +187,16 @@ def run() -> None:
 
         # --- 斜杠命令 ---
         if line == "/quit" or line == "/exit":
+            _flush_session_to_long_term(agent, user_id, history)
             print("再见。")
             return
         if line == "/help":
             _print_help()
             continue
         if line == "/reset":
+            _flush_session_to_long_term(agent, user_id, history)
             history = None
-            print("(会话历史已清空)\n")
+            print("(会话历史已清空；上一会话已写入长期记忆)\n")
             continue
         if line == "/tools":
             _print_tools(registry)
@@ -175,9 +206,10 @@ def run() -> None:
             if not new_uid:
                 print("用法：/user U001")
                 continue
+            _flush_session_to_long_term(agent, user_id, history)
             user_id = new_uid
             history = None
-            print(f"(切到 {user_id}，历史已清空)\n")
+            print(f"(切到 {user_id}，历史已清空；上一会话已写入长期记忆)\n")
             continue
         if line.startswith("/"):
             print(f"未知命令：{line}（试试 /help）")
@@ -195,10 +227,11 @@ def run() -> None:
         final = result.final or "(未收敛：达到 max_steps，请 /reset 后换种问法)"
         print(f"\n[agent] {final}\n")
 
-        # 转人工即终态：下一轮不能继续挂在已结束的对话上，强制清空历史
+        # 转人工即终态：写回长期、清空历史，让用户从干净状态继续
         if result.final == "已转接人工":
+            _flush_session_to_long_term(agent, user_id, result.messages)
             history = None
-            print("(会话已转人工，历史已清空；输入新问题可开启下一轮)\n")
+            print("(会话已转人工；历史已写入长期记忆并清空，输入新问题可开启下一轮)\n")
             continue
 
         # 把本轮结果作为下一轮的 history，维持多轮上下文

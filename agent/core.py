@@ -10,7 +10,6 @@
 - `run_routed()` 编排「分类 → 策略 → fast_path 或 ReAct」整条链路
 
 不做的事（留给后续 module）：
-- 长/短期记忆（M3·W3）
 - Prompt 注入过滤 / 情绪感知（M6/M7·W4）
 """
 
@@ -21,6 +20,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from agent.llm import chat as default_chat
+from agent.memory.events import MemoryEvent
+from agent.memory.long_term import LongTermMemory
+from agent.memory.short_term import ShortTermMemory
 from agent.tools._contract import ToolRegistry, ToolSpec
 
 ChatFn = Callable[..., Any]
@@ -56,6 +58,9 @@ class RunResult:
     intent: str = "other"
     route_path: str = "default"  # "rules" | "llm" | "default"
     confidence: float = 0.0
+    # 本轮记忆层动作的可观测轨迹（load_long_term / compress / save_long_term）。
+    # 与 intent/route_path 同构：数据回传、非副作用回调，REPL 和评测都能按需消费。
+    memory_events: list[MemoryEvent] = field(default_factory=list)
 
 
 class Agent:
@@ -68,6 +73,8 @@ class Agent:
         max_steps: int = 6,
         chat_fn: ChatFn | None = None,
         router: Any = None,
+        short_term: ShortTermMemory | None = None,
+        long_term: LongTermMemory | None = None,
     ):
         self.registry = registry
         self.system_prompt = system_prompt
@@ -75,6 +82,11 @@ class Agent:
         self._chat = chat_fn or default_chat
         # router 懒加载——只有 run_routed 用到；直接 run() 的链路完全不碰它
         self._router = router
+        # 记忆层可选注入：为 None 时 run_routed 跳过对应层，保持对旧测试向后兼容。
+        # 短期 = Summary-Buffer（LangChain ConversationSummaryBufferMemory 谱系）
+        # 长期 = per-user append-only md（ChatGPT Memory / MemGPT / Letta 谱系）
+        self._short_term = short_term
+        self._long_term = long_term
 
     def run(
         self,
@@ -83,6 +95,7 @@ class Agent:
         history: list[dict] | None = None,
         exposed_tools: tuple[str, ...] | None = None,
         prompt_patch: str = "",
+        memory_block: str = "",
     ) -> RunResult:
         """执行一次 ReAct 循环。
 
@@ -94,8 +107,12 @@ class Agent:
           `self.system_prompt + "\\n\\n" + prompt_patch`。这对多轮路由很关键：
           不同轮可能命中不同意图，patch 必须随轮更新。
           为空时保持旧行为（沿用 history 里的 system），不破坏既有测试。
+
+        - `memory_block` 非空时，作为第三段追加到 system（冷启动用户的长期记忆）。
         """
-        messages = self._build_initial_messages(history, user_message, prompt_patch)
+        messages = self._build_initial_messages(
+            history, user_message, prompt_patch, memory_block
+        )
         tools_arg = self._tools_for_exposure(exposed_tools)
         steps: list[Step] = []
 
@@ -150,20 +167,34 @@ class Agent:
     ) -> RunResult:
         """分类 → 策略 → fast_path 或带工具子集的 ReAct。
 
-        路由元数据（intent / route_path / confidence）被回填到 RunResult，
-        便于 REPL 打印与 W5 评测分桶统计。
+        入口先跑记忆层（**先 load 后 compact 再进 ReAct**）：
+        1. 长期：若 history 为空且配了 long_term，按 user_id 读最近 3 段摘要，
+           作为独立 system 块拼进新 history（仅冷启动该会话时触发）
+        2. 短期：若配了 short_term，对 history 做 Summary-Buffer 压缩
+        3. 分类 + fast_path / 正常 ReAct
+
+        记忆事件与路由元数据同步回填进 RunResult，便于 REPL 与评测消费。
         """
         from agent.router import POLICY_MAP, IntentRouter  # 循环依赖防范
 
         if self._router is None:
             self._router = IntentRouter()
+
+        memory_events: list[MemoryEvent] = []
+        history, long_term_block = self._apply_memory_before_run(
+            history=history, user_id=user_id, events=memory_events,
+        )
+
         decision = self._router.classify(user_message)
         policy = POLICY_MAP.get(decision.intent, POLICY_MAP["other"])
 
         if policy.fast_path_tool is not None:
-            return self._run_fast_path(
+            result = self._run_fast_path(
                 user_message, user_id, history, decision, policy,
+                memory_block=long_term_block,
             )
+            result.memory_events = memory_events
+            return result
 
         result = self.run(
             user_message=user_message,
@@ -171,33 +202,80 @@ class Agent:
             history=history,
             exposed_tools=policy.exposed_tools,
             prompt_patch=policy.prompt_patch,
+            memory_block=long_term_block,
         )
         result.intent = decision.intent
         result.route_path = decision.route_path
         result.confidence = decision.confidence
+        result.memory_events = memory_events
         return result
 
+    def save_long_term(
+        self, user_id: str, messages: list[dict]
+    ) -> list[MemoryEvent]:
+        """对外暴露的长期记忆写回入口，REPL 在 /reset、/user、/quit 时调用。
+
+        无 long_term 或消息为空直接返回空事件列表，不炸错——REPL 调用时不必判空。
+        """
+        if self._long_term is None or not messages:
+            return []
+        events: list[MemoryEvent] = []
+        self._long_term.save_session(user_id, messages, events)
+        return events
+
     # ---------- 内部辅助 ----------
+
+    def _apply_memory_before_run(
+        self,
+        history: list[dict] | None,
+        user_id: str | None,
+        events: list[MemoryEvent],
+    ) -> tuple[list[dict] | None, str]:
+        """入口先压后跑：长期 load → 短期 compact。
+
+        - 长期加载只在 `history is None` 且有 `user_id` 时触发（即新会话冷启动），
+          避免每轮都重读文件；返回的 block 由 `run()` 作为 system 后缀注入，
+          而不是塞进 history[0]——后者会被 `_build_initial_messages` 的"替换
+          messages[0]"逻辑吞掉
+        - 短期压缩在任何有 history 的情况下都跑一次，保证历史不会无限膨胀
+        """
+        long_term_block = ""
+        if self._long_term is not None and history is None and user_id is not None:
+            long_term_block = self._long_term.load_block(user_id, events)
+
+        if self._short_term is not None and history:
+            history = self._short_term.maybe_compact(history, events)
+
+        return history, long_term_block
 
     def _build_initial_messages(
         self,
         history: list[dict] | None,
         user_message: str,
         prompt_patch: str,
+        memory_block: str = "",
     ) -> list[dict]:
         """构造本轮对话 messages 序列。
 
-        - 无 history：新建 system（含 patch）+ user
-        - 有 history + 无 patch：沿用 history 原 system（兼容既有测试）
-        - 有 history + 有 patch：**替换** messages[0] 为新 system，使 patch 逐轮更新
+        system 内容合成顺序：`base + "\\n\\n" + patch + "\\n\\n" + memory_block`
+        （空段自动略过）。长期记忆块以 system 后缀形式注入，不依赖 history[0]——
+        这样在 patch 非空时"替换 messages[0]"的行为也不会把记忆覆盖掉。
+
+        - 无 history：新建 system（含 patch + memory_block）+ user
+        - 有 history + 无 patch + 无 memory_block：沿用 history 原 system（兼容旧测试）
+        - 有 history + 有 patch/memory_block：**替换** messages[0] 为新 system
         """
         system_content = self.system_prompt
         if prompt_patch:
             system_content = f"{system_content}\n\n{prompt_patch}"
+        if memory_block:
+            system_content = f"{system_content}\n\n{memory_block}"
+
+        rebuild_system = bool(prompt_patch or memory_block)
 
         if history:
             messages = list(history)
-            if prompt_patch:
+            if rebuild_system:
                 if messages and messages[0].get("role") == "system":
                     messages[0] = {"role": "system", "content": system_content}
                 else:
@@ -231,13 +309,16 @@ class Agent:
         history: list[dict] | None,
         decision: Any,
         policy: Any,
+        memory_block: str = "",
     ) -> RunResult:
         """绕过 LLM 直接派发零参数终止工具（当前只有 escalate_to_human）。
 
         仍构造一条完整的 assistant tool_call + tool result message 序列，
         让 messages 形态与正常 ReAct 一致——下游 history / 评测 harness 不需要特判。
         """
-        messages = self._build_initial_messages(history, user_message, "")
+        messages = self._build_initial_messages(
+            history, user_message, "", memory_block
+        )
         result = self.registry.dispatch(policy.fast_path_tool, {})
 
         call_id = f"fastpath_{policy.fast_path_tool}"
