@@ -5,9 +5,9 @@
 - 工具层硬拦截越权：`order.user_id != args.user_id` → UNAUTHORIZED，
   无论 prompt 写得多宽松都挡得住（分层防御的"硬规则"层）
 - 已退款订单再退 → INVALID_STATE，天然幂等
-- 不校验退货期：期限规则在 `knowledge/policies.md`，
-  不硬编码到工具，避免两处事实源
-- 对话层"必须确认才执行"由 system prompt 引导，不进工具
+- **退货时效政策不在工具层校验**：天数是业务政策，可能随运营调整；
+  由 system prompt 引导 LLM 结合 `query_orders` 返回的 `days_since_shipped`
+  和 `knowledge/policies.md`（单一事实源）自判。工具层只兜底"存在性 / 归属 / 状态"三类硬事实。
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class InitiateRefundInput(BaseModel):
 
 
 def initiate_refund_handler(args: InitiateRefundInput) -> dict:
-    """存在性 → 归属 → 状态，三道校验顺序决定错误码优先级。"""
+    """存在性 → 归属 → 已退款，三道校验顺序决定错误码优先级。"""
     with db_session() as conn:
         row = conn.execute(
             "SELECT user_id, status FROM orders WHERE order_id = ?",
@@ -63,9 +63,11 @@ INITIATE_REFUND_SPEC = ToolSpec(
     name="initiate_refund",
     description=(
         "对指定订单发起退款，执行后状态置为 refunded。"
-        "调用前必须满足：(1) 订单属于当前用户；(2) 订单尚未退款；"
-        "(3) 已在对话中明确向用户确认退款意图（必须先问'您确定要对订单 XXX 发起退款吗'）。"
-        "工具层会硬校验 (1)(2)，(3) 是客服协议要求。"
+        "调用前 LLM 应自行确认：(1) 订单属于当前用户；(2) 订单尚未退款；"
+        "(3) 订单满足 policies.md 中的退货时效政策（结合 query_orders 的 "
+        "days_since_shipped 与 query_policy 返回的条款自行判断）。"
+        "工具层只对前两点硬校验（NOT_FOUND / UNAUTHORIZED / INVALID_STATE），"
+        "时效政策完全交由 LLM 判断；不满足时 LLM 应向用户说明原因，不调用本工具。"
     ),
     input_model=InitiateRefundInput,
     handler=initiate_refund_handler,

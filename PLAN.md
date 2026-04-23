@@ -118,7 +118,7 @@ user_id: U001
   - 返回体统一为 JSON-serializable dict；错误用 `{"ok": false, "error_code", "message"}` 形态回传给 LLM
   - 用 Pydantic 校验入参，但对 LLM 暴露的 schema 以 OpenAI function calling 为准
   - [x] `query_orders(user_id)` 订单列表查询：返回当前用户全部订单（入参不含 order_id，架构上消除越权面）
-  - [x] `initiate_refund(user_id, order_id)` 退换货发起：NOT_FOUND / UNAUTHORIZED / INVALID_STATE 三道校验，越权由工具层硬挡
+  - [x] `initiate_refund(user_id, order_id)` 退换货发起：NOT_FOUND / UNAUTHORIZED / INVALID_STATE 三道硬事实校验；退货时效政策不在工具层校验，由 LLM 结合 policies.md（单一事实源）+ `days_since_shipped` 自判
   - [x] `query_product(product_ids)` 商品信息查询：DB 交易数据 + md 完整描述；去重保序、部分不存在时返回 products + missing
   - [x] `query_policy()` 政策查询：无参，返回整个 `policies.md` 文件
   - [x] `escalate_to_human()` 转人工：无参的终止型工具，循环在 `agent/core.py` 识别到调用后硬切对话，返回 `"已转接人工"`
@@ -139,7 +139,7 @@ user_id: U001
   - [x] 工具层鉴权：`initiate_refund` 内部校验 `user_id` 与订单归属；无论对话路径如何都硬拦截（`query_orders` 因入参不含 order_id，已在架构上消除越权面）
   - [x] Prompt 注入过滤：`agent/guardrails/injection.py` 规则层三类正则（角色劫持 / 系统提示泄露 / 越狱关键词），`run_routed` 预检命中即短路返回固定拒绝文案（§9 #10）
   - [x] 关键信息（价格/库存/政策）禁止 LLM 臆造，必须走工具（由 system prompt 强约束）
-  - [x] 退货流程安全点不靠 FSM，由 system prompt 引导（必须确认才执行）+ 工具层鉴权双层兜底
+  - [x] 退货流程安全点不靠 FSM：对话层 system prompt 引导 LLM 调 `query_policy` + `query_orders` 后自判时效，满足即直接退；工具层只管"存在性 / 归属 / 状态"三类硬事实（§9 #12）
 - [x] **M7 · 情绪感知 + 升级**：作为独立 intent `negative_emotion` 并入路由漏斗（§9 #10）
   - [x] 规则层 12 词正则（垃圾/骗子/气死/投诉 等），内容匹配（search）而非整串
   - [x] LLM 分类器 prompt 扩 8 标签，新增 `negative_emotion` 语义与负样本
@@ -151,7 +151,7 @@ user_id: U001
 
 - [ ] **E1 · 评测集**：80–100 条样本，覆盖 6 个 Fixture 剧本
   - [ ] 愤怒的催单客户（情绪识别 + 升级）
-  - [ ] 退货流程（多工具编排：查订单 → 确认 → 执行）
+  - [ ] 退货流程（多工具编排：查订单 → 查政策 → LLM 自判时效 → 执行；含超期应被对话层拦下、不调 initiate_refund 的负例）
   - [ ] 政策咨询新客（`query_policy`，"几天内可以退"）
   - [ ] 商品咨询（`query_product` 多源融合，"X1 耳机续航多久，还有货吗"）
   - [ ] 老客复购（长期记忆 + 跨会话召回，"我上次买的那款现在发货没"）
@@ -216,14 +216,14 @@ nana-agent/
 
 ### 已完成（累计）
 
-- **数据层**：SQLite schema + `seed.py`（2 用户 / 3 商品 / 10 订单含 3 异常，全量写死）+ `knowledge/products/*.md` + `knowledge/policies.md`（"发货日 +7 天"统一规则）
+- **数据层**：SQLite schema + `seed.py`（2 用户 / 3 商品 / 10 订单含 3 异常，全量写死）+ `knowledge/products/*.md` + `knowledge/policies.md`（退货时效等政策的单一事实源）
 - **骨架**：`agent/core.py` ReAct 循环（`Step`/`ToolInvocation`/`RunResult` + `max_steps` + 派发前 `user_id` 硬覆盖）；工具契约 `_contract.py`（OpenAI function calling + 统一错误返回）；`agent/llm.py` 双模型 client（`MODEL` 主 / `LIGHT_MODEL` 轻，`chat(model=...)` 参数切换；§9 #11）
-- **工具 5/5**：`query_orders` / `query_product`（DB+md 融合）/ `query_policy` / `initiate_refund`（三道校验）/ `escalate_to_human`（终止型，按 name 硬切返回"已转接人工"）
+- **工具 5/5**：`query_orders` / `query_product`（DB+md 融合）/ `query_policy` / `initiate_refund`（三道硬事实校验，政策交 LLM 自判）/ `escalate_to_human`（终止型，按 name 硬切返回"已转接人工"）
 - **M5 意图路由**：`agent/router.py` 漏斗分类器 + 8 意图 `POLICY_MAP`（含 `negative_emotion`）+ `Agent.run_routed()` 编排；slim base + 资料/规则按意图下沉到 patch（`other` 兜底承载全量规则；catalog 通过 `_CATALOG_SNIPPET` 挂 `product_inquiry` + `other`）；`escalation` / `negative_emotion` 都走 fast_path
 - **M3 两层记忆**：`agent/memory/{events,short_term,long_term}.py`；`run_routed` 入口先压后跑；`RunResult.memory_events` 可观测；REPL 在 `/reset`/`/user`/`/quit`/ 转人工 时 `save_session`
 - **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #10）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
 - **M6 护栏**：`agent/guardrails/injection.py` 规则层预检（三类：角色劫持 / 提示泄露 / 越狱关键词；正序 + 中文倒装），`run_routed` 最前一道闸；命中 `intent="injection"` / `route_path="guardrails"` / 固定拒绝文案、0 LLM
-- **测试 & 人工**：129 pytest 全绿（含双模型分层 3 条契约测试）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
+- **测试 & 人工**:129 pytest 全绿（含双模型分层 3 条契约测试；退款工具层新增"天数不校验"不变式测试锁定架构决策）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
 
 ### 下一步
 
@@ -241,7 +241,7 @@ nana-agent/
   - 自研 ReAct Agent 循环（Thought/Action/Observation），工具层遵循 **OpenAI function calling** 规范，跨 LLM 可插拔
   - **按领域特点裁剪架构**：经评估主动去除向量 RAG 与语义记忆（详述于设计文档），改用 catalog 索引 + 结构化摘要，消融实验数据支撑
   - 两层记忆架构（短期滚动窗口+压缩 / 长期 per-session md 摘要），跨会话个性化
-  - **分层防御**：工具层鉴权（无论调用路径都拦截越权）+ Prompt 层约束（必须确认才执行敏感动作）
+  - **分层防御**：工具层硬挡"存在性 / 归属 / 状态"三类硬事实（如越权 → `UNAUTHORIZED`），可变的业务政策（如退货时效）交给 LLM 自判 —— policies.md 即单一事实源；两层分工明确，避免政策改一次要改多处
   - 80+ 样本评测体系（自动指标 + LLM Judge + 红队 + 四路消融）
   - 评测报告：Task Success Rate XX%，单 session 成本 $X.XX，P95 延迟 X.Xs
 
@@ -264,6 +264,7 @@ nana-agent/
 | 9 | 两层记忆：短期 Summary-Buffer（会话内压缩）+ 长期 per-user append-only md（冷启动 load 最近 3 段） | 短期解决会话膨胀，长期解决老客跨会话召回；`_lt_cache` 按轮重注入新 system，抵消 patch 替换 `messages[0]` |
 | 10 | 情绪感知并入 router 作独立 intent `negative_emotion`（与 `escalation` 共用 fast_path）；Prompt 注入独立 `guardrails` 层 | 情绪是"意图的延伸"、注入是"威胁行为，不是意图"——guardrails/router/ReAct 三层各司其职；注入纯正则够用，LLM 兜底延后到 W5 红队数据出来再加 |
 | 11 | 双模型分层：主 qwen-plus（ReAct 主循环）+ 轻量 qwen-turbo（路由分类 / 短期压缩 / 长期摘要）；`chat(model=...)` 参数注入 | 把"便宜之前跑贵的"思路从规则→LLM 再延伸到模型级：三处轻量任务无 tool use、输入短、输出短，plus 属于杀鸡用牛刀；成本随量下降，函数调用与最终答复质量不妥协。W5 E4 可加一组"全 plus / 分层 / 全 turbo"对比把代价讲清楚 |
+| 12 | 退款流程不再反问"是否确认"；退货时效政策也不在工具层校验，完全由 LLM 调 `query_policy` 结合订单的 `days_since_shipped` 自判。policies.md 是政策条款的**单一事实源**（工具 description / prompt_patch 均不复述具体天数） | 反问一轮徒增"用户回复'确定'被分类成 other"的意图漂移风险；天数属于"可能被运营调整的业务政策"（不是越权那种硬事实），工具层硬拦会出现"政策改一次要改多处"+ 工具层硬拦一旦误拦又无对话层兜底。工具层只守"存在性 / 归属 / 状态"三类硬事实，政策交 prompt 层；同时规避了意图粘性，P2 延后到 W5 真实数据再看 |
 
 ---
 
@@ -271,7 +272,6 @@ nana-agent/
 
 - [ ] 评测集具体场景细化（W5 之前敲定）
 - [ ] 红队攻击用例库来源（自己设计 vs 参考公开数据集）
-- [ ] 退款流程对"边界日期"订单的处理（例如发货第 7 天）是否需要额外 prompt 话术引导
 - [ ] 路由 confidence 阈值 0.6 是凭经验拍的，W5 用真实样本标注后再回调
 - [ ] 分类 LLM 的 prompt 已加"多意图→other"负样本；单意图误分率仍待 W5 真实标注后再迭代 few-shot
 - [ ] 意图粒度：`order_query` 是否拆"物流进度" vs "状态确认"、`refund_request` 是否独立出"已发货 vs 未发货"子类——视 W5 分桶数据决定

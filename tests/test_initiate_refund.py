@@ -1,19 +1,33 @@
 """initiate_refund 工具单元测试。
 
 覆盖：
-- 正常路径：pending / shipped / delivered 三态各一条 → refunded
+- 正常路径：pending / shipped / delivered 订单 → refunded（工具层不校验天数）
 - 幂等：已 refunded 再退 → INVALID_STATE
 - 越权：U001 尝试退 U002 的订单 → UNAUTHORIZED，DB 不变
 - 订单不存在 → NOT_FOUND
 - 入参缺失 → INVALID_INPUT
-- OpenAI schema 不变式：order_id 必需（与 query_orders 对照）
+- OpenAI schema 不变式：user_id 与 order_id 都必需
+
+注意：退货时效政策不在工具层校验，由 LLM 结合 policies.md 自判。
+因此本文件不测政策违规；超期订单应在对话层被拦住（见 smoke/eval）。
 """
 
 from __future__ import annotations
 
+import pytest
+
 from agent.tools._contract import ErrorCode
 from agent.tools.initiate_refund import INITIATE_REFUND_SPEC
 from db import db_session
+from scripts.seed import seed
+
+
+@pytest.fixture(autouse=True)
+def _reseed_between_tests():
+    """本模块每个用例都会改写订单状态；每条用例前重置到种子态，避免相互污染
+    以及污染后续模块（如 test_query_orders 依赖 O009 仍为 delivered）。"""
+    seed()
+    yield
 
 
 def _status(order_id: str) -> str | None:
@@ -33,14 +47,17 @@ def test_pending_can_be_refunded():
 
 
 def test_shipped_can_be_refunded():
-    """O003 (U001, shipped) → refunded。"""
+    """O003 (U001, shipped) → refunded。天数由 LLM 判断，工具层放行。"""
     result = INITIATE_REFUND_SPEC.invoke({"user_id": "U001", "order_id": "O003"})
     assert result["ok"] is True
     assert _status("O003") == "refunded"
 
 
-def test_delivered_can_be_refunded():
-    """O005 (U001, delivered) → refunded。"""
+def test_delivered_can_be_refunded_regardless_of_days():
+    """O005 (U001, delivered, 发货 9 天) 工具层也应放行——天数判断不在这一层。
+
+    这是对"工具层只管硬事实，政策交给 LLM"这一架构决策的不变式锁定。
+    """
     result = INITIATE_REFUND_SPEC.invoke({"user_id": "U001", "order_id": "O005"})
     assert result["ok"] is True
     assert _status("O005") == "refunded"
