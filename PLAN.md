@@ -266,6 +266,7 @@ nana-agent/
 | 17 | 进一步下沉：商品 catalog 从 base 挪到 `product_inquiry` 的 patch，base 砍到身份 + 格式两行（~30 字符） | 只有商品咨询意图需要把"蓝牙耳机"映射到 `product_id`；订单/政策/退款/闲聊看到 catalog 是纯噪声，放 base 相当于每轮多塞 3 行无用资料。"资料按意图需用即挂"与"规则按意图需用即挂"对称，收敛路由心智模型 |
 | 18 | 分类器 prompt 加多意图→`other` 的负样本对照（"订单+商品""订单+政策""商品+政策"等 4 条样例），并在单意图标签描述前加"**仅**"字样 | 原 "多意图混合" 规则只一行描述、无样例，qwen-plus 遇"查商品和我的订单"会勉强挑主意图（实测 conf=0.65 命中 order_query，裁掉了 query_product 导致另一维度答不了）。加样例后同一句稳定落 `other` conf=0.98，两把工具都被调到。启示："跨维度 → 兜底" 规则必须用负样本锚定，仅靠抽象描述 LLM 会走捷径 |
 | 19 | 两层记忆谱系对照：**短期 = Summary-Buffer（LangChain `ConversationSummaryBufferMemory` / Claude Code auto-compact 谱系）**；**长期 = per-user append-only md（ChatGPT Memory / MemGPT / Letta 谱系）**。入口按"长期 load → 短期 compact → ReAct"顺序；用户轮数 ≥2 才 `save_session`；`load_block` 只取最近 3 段；记忆事件随 `RunResult.memory_events` 回传（非副作用回调）| 两套谱系是主流、各有其位：短期处理会话内膨胀，长期处理老客跨会话召回。Claude Code 是"会话级无状态"——不等于否定长期记忆，而是电商场景有"老客回头"天然诉求，合理场景适配。`min_turns=2` 防 1 轮闲聊污染档案；`最近 3 段` 防历史越堆越重（可供 W5 消融对比）；`MemoryEvent` 与 `route_path/confidence` 同构，保持"可观测=数据回传"的统一心智 |
+| 20 | 长期记忆在 Agent 里用 `_lt_cache[user_id]` 做**会话内缓存 + 每轮重注入**，不是"只在第 1 轮 load 一次，之后靠 history 携带" | 续轮 `_build_initial_messages` 在 patch 非空时会替换 `messages[0]` 成 `base + patch`，首轮嵌入的长期块会被吞掉。冷启动 load 后缓存，续轮作为 `memory_block` 参数重注入到新 system 里，抵消替换路径。这与 ChatGPT Memory / Claude Code `CLAUDE.md` / Cursor `.cursorrules` 的"会话启动读一次、期内稳定"契约一致——主流 agent 共识 |
 
 ---
 

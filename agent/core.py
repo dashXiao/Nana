@@ -82,11 +82,12 @@ class Agent:
         self._chat = chat_fn or default_chat
         # router 懒加载——只有 run_routed 用到；直接 run() 的链路完全不碰它
         self._router = router
-        # 记忆层可选注入：为 None 时 run_routed 跳过对应层，保持对旧测试向后兼容。
-        # 短期 = Summary-Buffer（LangChain ConversationSummaryBufferMemory 谱系）
-        # 长期 = per-user append-only md（ChatGPT Memory / MemGPT / Letta 谱系）
+        # 记忆层可选：None 时 run_routed 跳过。谱系见 PLAN §9 #19。
         self._short_term = short_term
         self._long_term = long_term
+        # 长期块会话内缓存，供每轮重注入——否则 patch 非空时 `_build_initial_messages`
+        # 替换 messages[0] 会吞掉首轮嵌入的块（PLAN §9 #20）。
+        self._lt_cache: dict[str, str] = {}
 
     def run(
         self,
@@ -213,14 +214,12 @@ class Agent:
     def save_long_term(
         self, user_id: str, messages: list[dict]
     ) -> list[MemoryEvent]:
-        """对外暴露的长期记忆写回入口，REPL 在 /reset、/user、/quit 时调用。
-
-        无 long_term 或消息为空直接返回空事件列表，不炸错——REPL 调用时不必判空。
-        """
+        """REPL 在 /reset、/user、/quit 时调用；无 long_term / 空消息则 no-op。"""
         if self._long_term is None or not messages:
             return []
         events: list[MemoryEvent] = []
         self._long_term.save_session(user_id, messages, events)
+        self._lt_cache.pop(user_id, None)
         return events
 
     # ---------- 内部辅助 ----------
@@ -231,17 +230,14 @@ class Agent:
         user_id: str | None,
         events: list[MemoryEvent],
     ) -> tuple[list[dict] | None, str]:
-        """入口先压后跑：长期 load → 短期 compact。
-
-        - 长期加载只在 `history is None` 且有 `user_id` 时触发（即新会话冷启动），
-          避免每轮都重读文件；返回的 block 由 `run()` 作为 system 后缀注入，
-          而不是塞进 history[0]——后者会被 `_build_initial_messages` 的"替换
-          messages[0]"逻辑吞掉
-        - 短期压缩在任何有 history 的情况下都跑一次，保证历史不会无限膨胀
-        """
+        """长期 load（冷启动）/ 取缓存（续轮）→ 短期 compact → 返回给 ReAct。"""
         long_term_block = ""
-        if self._long_term is not None and history is None and user_id is not None:
-            long_term_block = self._long_term.load_block(user_id, events)
+        if self._long_term is not None and user_id is not None:
+            if history is None:
+                long_term_block = self._long_term.load_block(user_id, events)
+                self._lt_cache[user_id] = long_term_block
+            else:
+                long_term_block = self._lt_cache.get(user_id, "")
 
         if self._short_term is not None and history:
             history = self._short_term.maybe_compact(history, events)

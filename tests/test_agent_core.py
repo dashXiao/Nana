@@ -555,6 +555,75 @@ def test_run_routed_with_existing_history_does_not_reload_long_term():
     assert long_term.loaded == 0
 
 
+def test_long_term_block_persists_across_turns_with_prompt_patch():
+    """续轮 + 非空 patch：长期块由缓存重注入，不能被 messages[0] 替换吞掉。
+
+    回归锁：主流 agent（ChatGPT Memory / Claude Code / Letta core memory）
+    的共识是"长期记忆会话内稳定不变"——此测试证明我们的缓存+每轮重注入
+    兑现了该契约，而不是仅在第 1 轮可见。
+    """
+    long_term = _StubLongTerm(block="[长期记忆]\n用户是 VIP")
+    captured: list[dict] = []
+
+    def capturing_chat(messages, tools=None, **_kw):
+        captured.append(list(messages))
+        return _fake_resp(_FakeMsg(content="ok"))
+
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="BASE",
+        chat_fn=capturing_chat,
+        # order_query 这类意图 patch 非空，能触发 messages[0] 替换路径
+        router=_StubRouter(IntentDecision("order_query", 0.9, "llm")),
+        long_term=long_term,
+    )
+
+    # 第 1 轮冷启动
+    r1 = agent.run_routed("Q1", user_id="U001")
+    # 第 2 轮带着 history 回来
+    r2 = agent.run_routed("Q2", user_id="U001", history=r1.messages)
+    # 第 3 轮再继续
+    agent.run_routed("Q3", user_id="U001", history=r2.messages)
+
+    # 长期文件只被读一次（冷启动），续轮走缓存
+    assert long_term.loaded == 1
+    # 三轮 chat_fn 收到的 system 都含长期块
+    for turn_idx, msgs in enumerate(captured, start=1):
+        systems = [m for m in msgs if m.get("role") == "system"]
+        joined = "\n".join(s["content"] for s in systems)
+        assert "用户是 VIP" in joined, (
+            f"第 {turn_idx} 轮的 system 应含长期块，实际: {joined[:200]}"
+        )
+
+
+def test_save_long_term_invalidates_cache_so_next_cold_start_reloads():
+    """save 之后下次冷启动必须重读文件，不能拿到旧缓存。"""
+    long_term = _StubLongTerm(block="旧块")
+    agent = Agent(
+        registry=ToolRegistry([QUERY_ORDERS_SPEC]),
+        system_prompt="BASE",
+        chat_fn=_scripted_chat(
+            [_FakeMsg(content="ok"), _FakeMsg(content="ok")]
+        ),
+        router=_StubRouter(IntentDecision("chitchat", 1.0, "rules")),
+        long_term=long_term,
+    )
+
+    # 冷启动一次，产生 load
+    agent.run_routed("Q1", user_id="U001")
+    assert long_term.loaded == 1
+
+    # 保存 → 清缓存
+    agent.save_long_term(
+        "U001",
+        [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}],
+    )
+
+    # 再次冷启动（history=None）→ 应再次 load
+    agent.run_routed("Q2", user_id="U001")
+    assert long_term.loaded == 2
+
+
 def test_run_routed_triggers_short_term_compact_and_records_event():
     """短期触发压缩时，chat_fn 收到的 messages 已是压缩后形态，事件被记录。"""
     short_term = _StubShortTerm(should_compact=True)

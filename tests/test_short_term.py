@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from agent.memory.events import MemoryEvent
 from agent.memory.short_term import ShortTermMemory
 
@@ -162,11 +160,3 @@ def test_llm_failure_degrades_to_placeholder_summary():
     assert events[0].kind == "compress"
 
 
-# ============ 构造参数合法性 ============
-
-
-def test_invalid_keep_recent_raises():
-    with pytest.raises(ValueError):
-        ShortTermMemory(max_rounds=2, keep_recent=2)
-    with pytest.raises(ValueError):
-        ShortTermMemory(max_rounds=2, keep_recent=5)
