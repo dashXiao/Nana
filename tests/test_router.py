@@ -55,6 +55,32 @@ def test_rule_matches_chitchat_variants():
         assert d.route_path == "rules"
 
 
+def test_rule_matches_negative_emotion_variants():
+    """强负面情绪关键词内容匹配即命中，无需整串。"""
+    router = IntentRouter(chat_fn=_fake_chat(""))
+    cases = [
+        "你们就是骗子！",
+        "这什么破服务，气死我了",
+        "再不发货我就投诉到消协",
+        "我要起诉你们",
+        "差评！退款都不给退",
+        "滚，别烦我",
+        "你们这店简直垃圾",
+    ]
+    for msg in cases:
+        d = router.classify(msg)
+        assert d.intent == "negative_emotion", f"{msg!r} 应命中 negative_emotion，实际 {d}"
+        assert d.route_path == "rules"
+        assert d.confidence == 1.0
+
+
+def test_rule_escalation_takes_precedence_over_emotion():
+    """'转人工' 整串精确命中优先于情绪模糊匹配——保留 intent 来源语义。"""
+    router = IntentRouter(chat_fn=_fake_chat(""))
+    d = router.classify("转人工")
+    assert d.intent == "escalation"
+
+
 def test_rule_does_not_greedily_match_compound_input():
     """整串匹配哨卡：带业务诉求的句子不能被 chitchat/escalation 吞掉。"""
     # 需要 LLM 返回一个合法结果，否则会降级到 default
@@ -85,6 +111,16 @@ def test_llm_classification_success():
     assert d.intent == "refund_request"
     assert d.route_path == "llm"
     assert d.confidence == 0.88
+
+
+def test_llm_classifies_negative_emotion_when_rules_miss():
+    """规则词表未覆盖的情绪表述，LLM 层仍能归 negative_emotion。"""
+    router = IntentRouter(
+        chat_fn=_fake_chat('{"intent": "negative_emotion", "confidence": 0.92}')
+    )
+    d = router.classify("你们的服务实在太让我失望了，不想再说什么了")
+    assert d.intent == "negative_emotion"
+    assert d.route_path == "llm"
 
 
 def test_llm_low_confidence_degrades_to_default():
@@ -144,6 +180,14 @@ def test_policy_map_covers_all_valid_intents():
 
 def test_escalation_policy_is_fast_path():
     p = POLICY_MAP["escalation"]
+    assert p.fast_path_tool == "escalate_to_human"
+    assert p.final_template == "已转接人工"
+    assert p.exposed_tools == ()
+
+
+def test_negative_emotion_policy_is_fast_path():
+    """和 escalation 行为同构，intent 独立供 W5 分桶。"""
+    p = POLICY_MAP["negative_emotion"]
     assert p.fast_path_tool == "escalate_to_human"
     assert p.final_template == "已转接人工"
     assert p.exposed_tools == ()

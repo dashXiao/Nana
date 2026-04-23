@@ -140,7 +140,10 @@ user_id: U001
   - [ ] Prompt 注入过滤
   - [x] 关键信息（价格/库存/政策）禁止 LLM 臆造，必须走工具（由 system prompt 强约束）
   - [ ] 退货流程安全点不靠 FSM，由 system prompt 引导（必须确认才执行）+ 工具层鉴权双层兜底
-- [ ] **M7 · 情绪感知 + 升级**：检测负面情绪 → 自动 `escalate_to_human`
+- [x] **M7 · 情绪感知 + 升级**：作为独立 intent `negative_emotion` 并入路由漏斗（§9 #21）
+  - [x] 规则层 12 词正则（垃圾/骗子/气死/投诉 等），内容匹配（search）而非整串
+  - [x] LLM 分类器 prompt 扩 8 标签，新增 `negative_emotion` 语义与负样本
+  - [x] 与 `escalation` 共用 fast_path（`escalate_to_human` + "已转接人工"），intent 独立供 W5 分桶
 
 ---
 
@@ -217,12 +220,13 @@ nana-agent/
 - **工具 5/5**：`query_orders` / `query_product`（DB+md 融合）/ `query_policy` / `initiate_refund`（三道校验）/ `escalate_to_human`（终止型，按 name 硬切返回"已转接人工"）
 - **M5 意图路由**：`agent/router.py` 漏斗分类器 + 7 意图 `POLICY_MAP` + `Agent.run_routed()` 编排；slim base + 资料/规则按意图下沉到 patch（`other` 兜底承载全量规则）；escalation 走 fast_path
 - **M3 两层记忆**：`agent/memory/{events,short_term,long_term}.py`；`run_routed` 入口先压后跑；`RunResult.memory_events` 可观测；REPL 在 `/reset`/`/user`/`/quit`/ 转人工 时 `save_session`
-- **测试 & 人工**：89 pytest 全绿；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
+- **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #21）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
+- **测试 & 人工**：94 pytest 全绿；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
 
 ### 下一步
 
+- W4 护栏续：Prompt 注入过滤（`agent/guardrails/injection.py`，规则层命中即固定拒绝）
 - qwen-plus 深度优化（W3 下半段）：压缩摘要 prompt 调校、消融对比无记忆基线
-- W4 护栏：Prompt 注入过滤 + 情绪感知 → 自动 escalate
 
 ---
 
@@ -267,6 +271,7 @@ nana-agent/
 | 18 | 分类器 prompt 加多意图→`other` 的负样本对照（"订单+商品""订单+政策""商品+政策"等 4 条样例），并在单意图标签描述前加"**仅**"字样 | 原 "多意图混合" 规则只一行描述、无样例，qwen-plus 遇"查商品和我的订单"会勉强挑主意图（实测 conf=0.65 命中 order_query，裁掉了 query_product 导致另一维度答不了）。加样例后同一句稳定落 `other` conf=0.98，两把工具都被调到。启示："跨维度 → 兜底" 规则必须用负样本锚定，仅靠抽象描述 LLM 会走捷径 |
 | 19 | 两层记忆谱系对照：**短期 = Summary-Buffer（LangChain `ConversationSummaryBufferMemory` / Claude Code auto-compact 谱系）**；**长期 = per-user append-only md（ChatGPT Memory / MemGPT / Letta 谱系）**。入口按"长期 load → 短期 compact → ReAct"顺序；用户轮数 ≥2 才 `save_session`；`load_block` 只取最近 3 段；记忆事件随 `RunResult.memory_events` 回传（非副作用回调）| 两套谱系是主流、各有其位：短期处理会话内膨胀，长期处理老客跨会话召回。Claude Code 是"会话级无状态"——不等于否定长期记忆，而是电商场景有"老客回头"天然诉求，合理场景适配。`min_turns=2` 防 1 轮闲聊污染档案；`最近 3 段` 防历史越堆越重（可供 W5 消融对比）；`MemoryEvent` 与 `route_path/confidence` 同构，保持"可观测=数据回传"的统一心智 |
 | 20 | 长期记忆在 Agent 里用 `_lt_cache[user_id]` 做**会话内缓存 + 每轮重注入**，不是"只在第 1 轮 load 一次，之后靠 history 携带" | 续轮 `_build_initial_messages` 在 patch 非空时会替换 `messages[0]` 成 `base + patch`，首轮嵌入的长期块会被吞掉。冷启动 load 后缓存，续轮作为 `memory_block` 参数重注入到新 system 里，抵消替换路径。这与 ChatGPT Memory / Claude Code `CLAUDE.md` / Cursor `.cursorrules` 的"会话启动读一次、期内稳定"契约一致——主流 agent 共识 |
+| 21 | 情绪感知不做独立 guardrails 层，而是作为独立 intent `negative_emotion` 并入路由漏斗，与 `escalation` 共用 fast_path 工具但 intent 分桶 | 两者的 action 都是"转人工"，行为同构；但触发来源不同——`escalation` 是用户主动中性请求，`negative_emotion` 是情绪判定。合进 router 复用既有漏斗（规则 → LLM 一次调用），不增加 LLM 成本；分两个 intent 让 `RunResult.intent` 直接做 W5 评测分桶，不用额外加字段。正则规则用 `search` 内容匹配（情绪词常在复合句中："破耳机垃圾，快退！"），与 `escalation` 的 `^…$` 整串匹配形成对照 |
 
 ---
 

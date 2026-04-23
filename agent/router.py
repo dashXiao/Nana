@@ -33,6 +33,14 @@ _ESCALATION_RE = re.compile(
     r"^(转人工|找真人|转客服|人工)[!?.。！？~～]?$",
     re.IGNORECASE,
 )
+# negative_emotion 用 search（内容匹配）而非整串匹配：情绪词经常混在正常诉求里，
+# 例如"你们这破耳机垃圾，赶紧退！"既不是纯情绪宣泄、也不是标准退款诉求，但强
+# 负面情绪足以直接升级人工。和 escalation（用户主动要求转人工）拆成两个 intent，
+# 共用 fast_path 工具但 RunResult.intent 分桶可直接用于 W5 评测。
+_NEGATIVE_EMOTION_RE = re.compile(
+    r"(垃圾|骗子|气死|无耻|投诉|起诉|举报|差评|坑人|欺诈|滚|废物)",
+    re.IGNORECASE,
+)
 _CHITCHAT_RE = re.compile(
     r"^(你好|您好|hi|hello|哈喽|嗨|在吗|早上好|晚上好|谢谢|thanks|thx)[!?.。！？~～]?$",
     re.IGNORECASE,
@@ -55,6 +63,7 @@ _CATALOG_SNIPPET = (
 VALID_INTENTS: frozenset[str] = frozenset(
     {
         "escalation",
+        "negative_emotion",
         "chitchat",
         "order_query",
         "product_inquiry",
@@ -102,6 +111,14 @@ class IntentPolicy:
 
 POLICY_MAP: dict[str, IntentPolicy] = {
     "escalation": IntentPolicy(
+        exposed_tools=(),
+        fast_path_tool="escalate_to_human",
+        final_template="已转接人工",
+    ),
+    # 与 escalation 行为同构（都转人工），但 intent 独立：
+    # escalation 由"用户主动要求"触发，negative_emotion 由"情绪判定"触发。
+    # 分两个 intent 是为了 W5 评测天然分桶——用 RunResult.intent 直接统计两类命中率。
+    "negative_emotion": IntentPolicy(
         exposed_tools=(),
         fast_path_tool="escalate_to_human",
         final_template="已转接人工",
@@ -171,18 +188,24 @@ POLICY_MAP: dict[str, IntentPolicy] = {
 # 分类用的 system prompt 保持紧凑但不吝惜样例——多意图识别全靠这几个例子锚定，
 # 缺了样例 LLM 会倾向"挑一个最像的主意图"，导致跨维度问题漏路由（blog 点）。
 _CLASSIFIER_SYSTEM = """\
-你是电商客服对话的意图分类器。根据用户消息，从以下 7 个标签中选一个：
+你是电商客服对话的意图分类器。根据用户消息，从以下 8 个标签中选一个：
 
-- escalation: 用户明确要求转人工/找真人/投诉升级
+- escalation: 用户用中性语气明确要求转人工/找真人/转客服
+- negative_emotion: 用户表达强烈负面情绪（愤怒、辱骂、要投诉/举报/起诉），
+  即使没明确说"转人工"也归此类；与 escalation 的区别是触发来源——前者情绪
+  判定、后者主动请求
 - chitchat: 寒暄、问候、感谢、闲聊，无业务诉求
 - order_query: 仅询问订单状态、物流、订单列表，不涉及其他业务维度
 - product_inquiry: 仅询问商品价格、库存、参数、介绍，不涉及其他业务维度
 - policy_question: 仅询问退换货/发货/配送/售后等政策，不涉及其他业务维度
-- refund_request: 明确想退款/退货某张订单
+- refund_request: 明确想退款/退货某张订单（中性语气）
 - other: 跨两类以上业务维度的复合请求，或以上都不是
 
 关键规则——**一旦用户消息同时需要查询两类业务信息，必须选 other**，不要勉强
 挑"最主要"的那个意图。参考样例：
+- "转人工" → escalation
+- "你们这什么破店，骗子！" → negative_emotion
+- "我要投诉到消协！" → negative_emotion
 - "我最近的订单" → order_query
 - "你们卖什么" → product_inquiry
 - "发货几天内可退" → policy_question
@@ -220,6 +243,9 @@ class IntentRouter:
         # 层 1：规则
         if _ESCALATION_RE.match(text):
             return IntentDecision("escalation", 1.0, "rules")
+        # 情绪规则用 search 不是 match——情绪词常在复合句中出现
+        if _NEGATIVE_EMOTION_RE.search(text):
+            return IntentDecision("negative_emotion", 1.0, "rules")
         if _CHITCHAT_RE.match(text):
             return IntentDecision("chitchat", 1.0, "rules")
 
