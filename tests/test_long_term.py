@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+from agent.llm import LIGHT_MODEL
 from agent.memory.events import MemoryEvent
 from agent.memory.long_term import LongTermMemory
 
@@ -149,6 +150,24 @@ def test_save_session_empty_messages_skipped(tmp_path: Path):
 
     assert not (tmp_path / "U001.md").exists()
     assert events[0].kind == "save_long_term"
+
+
+# ============ 双模型分层契约 ============
+
+
+def test_summary_uses_light_model(tmp_path: Path):
+    """摘要任务应走 LIGHT_MODEL（双模型分层契约，PLAN §9 #11）。"""
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="摘要"))]
+        )
+
+    mem = LongTermMemory(base_dir=tmp_path, chat_fn=capturing_chat)
+    mem.save_session("U001", _conv(2), [])
+    assert captured.get("model") == LIGHT_MODEL
 
 
 # ============ 事件契约：所有公开方法至少记一条事件 ============

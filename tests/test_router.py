@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from agent.llm import LIGHT_MODEL
 from agent.router import (
     POLICY_MAP,
     VALID_INTENTS,
@@ -159,6 +160,23 @@ def test_llm_markdown_wrapped_json_still_parses():
     d = router.classify("几天能退")
     assert d.intent == "policy_question"
     assert d.route_path == "llm"
+
+
+def test_llm_classifier_uses_light_model():
+    """分类任务应走 LIGHT_MODEL（双模型分层契约，PLAN §9 #11）。"""
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"intent": "order_query", "confidence": 0.9}'
+            ))]
+        )
+
+    router = IntentRouter(chat_fn=capturing_chat)
+    router.classify("O001 状态")
+    assert captured.get("model") == LIGHT_MODEL
 
 
 def test_llm_raises_exception_degrades_to_default():

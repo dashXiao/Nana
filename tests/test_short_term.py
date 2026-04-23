@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from agent.llm import LIGHT_MODEL
 from agent.memory.events import MemoryEvent
 from agent.memory.short_term import ShortTermMemory
 
@@ -139,6 +140,22 @@ def test_compact_preserves_tool_messages_in_tail():
 
 
 # ============ 降级 ============
+
+
+def test_compression_uses_light_model():
+    """摘要任务应走 LIGHT_MODEL（双模型分层契约，PLAN §9 #11）。"""
+    captured: dict = {}
+
+    def capturing_chat(messages, tools=None, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="摘要"))]
+        )
+
+    mem = ShortTermMemory(max_rounds=2, keep_recent=1, chat_fn=capturing_chat)
+    msgs = _build_history(3)
+    mem.maybe_compact(msgs, [])
+    assert captured.get("model") == LIGHT_MODEL
 
 
 def test_llm_failure_degrades_to_placeholder_summary():

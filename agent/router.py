@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from agent.llm import chat as default_chat
+from agent.llm import LIGHT_MODEL, chat as default_chat
 
 ChatFn = Callable[..., Any]
 
@@ -258,6 +258,7 @@ class IntentRouter:
         return IntentDecision("other", 0.0, "default")
 
     def _classify_via_llm(self, text: str) -> IntentDecision | None:
+        # 分类任务：短输入 + 1 行 JSON 输出 + 不用 tool，走 LIGHT_MODEL（PLAN §9 #11）
         try:
             resp = self._chat(
                 messages=[
@@ -265,6 +266,7 @@ class IntentRouter:
                     {"role": "user", "content": text},
                 ],
                 tools=None,
+                model=LIGHT_MODEL,
             )
             content = resp.choices[0].message.content or ""
         except Exception:  # noqa: BLE001 — LLM 不稳定时统一降级

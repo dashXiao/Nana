@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from agent.llm import chat as default_chat
+from agent.llm import LIGHT_MODEL, chat as default_chat
 from agent.memory._render import render_for_summary
 from agent.memory.events import MemoryEvent
 
@@ -59,6 +59,7 @@ class ShortTermMemory:
         ] + tail
 
     def _summarize(self, dialogue: list[dict]) -> str:
+        # 摘要任务：无 tool + 短输出，走 LIGHT_MODEL（PLAN §9 #11）
         try:
             resp = self._chat(
                 messages=[
@@ -66,6 +67,7 @@ class ShortTermMemory:
                     {"role": "user", "content": render_for_summary(dialogue)},
                 ],
                 tools=None,
+                model=LIGHT_MODEL,
             )
             return (resp.choices[0].message.content or "").strip() or "（LLM 返回空摘要）"
         except Exception as exc:  # noqa: BLE001 — LLM 不稳定时不应炸掉对话

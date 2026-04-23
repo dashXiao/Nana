@@ -25,7 +25,7 @@
 
 | 维度 | 选型 | 备注 |
 |---|---|---|
-| LLM | **qwen-plus**（OpenAI 兼容接口） | 单模型，不做路由切换 |
+| LLM | **qwen-plus 主 + qwen-turbo 轻**（OpenAI 兼容接口） | 双模型分层：ReAct 走 plus，路由分类 / 记忆摘要走 turbo（§9 #11）|
 | 工具协议 | **OpenAI function calling** | 所有工具 schema 与错误返回统一此规范，便于跨 LLM 复用 |
 | 框架 | 自研 ReAct + Tool-use 循环 | 不用 LangGraph / LangChain |
 | 结构化存储 | SQLite（仅交易数据） | 无 Redis；不落运行期 trace |
@@ -168,6 +168,7 @@ user_id: U001
   - [ ] 记忆策略对比：无记忆 / 结构化摘要（本方案）/ 全量历史塞入
   - [ ] 知识检索策略对比：catalog+全量加载（本方案）/ 向量检索（实验对照）/ 全塞入
   - [ ] 组件消融：去长期记忆 / 去上下文压缩 分别跑
+  - [ ] 双模型分层对比：全 qwen-plus / 分层（本方案）/ 全 qwen-turbo，看 Task Success × Cost × Latency（§9 #11）
   - [ ] 全部出对比表，用数据支撑架构决策
 - [ ] **E5 · 红队测试**：Prompt 注入、越权查订单、诱导泄露系统提示、角色劫持，记录拦截率
 
@@ -216,13 +217,13 @@ nana-agent/
 ### 已完成（累计）
 
 - **数据层**：SQLite schema + `seed.py`（2 用户 / 3 商品 / 10 订单含 3 异常，全量写死）+ `knowledge/products/*.md` + `knowledge/policies.md`（"发货日 +7 天"统一规则）
-- **骨架**：`agent/core.py` ReAct 循环（`Step`/`ToolInvocation`/`RunResult` + `max_steps` + 派发前 `user_id` 硬覆盖）；工具契约 `_contract.py`（OpenAI function calling + 统一错误返回）；qwen-plus client（env 必填，模块级 `MODEL/client`）
+- **骨架**：`agent/core.py` ReAct 循环（`Step`/`ToolInvocation`/`RunResult` + `max_steps` + 派发前 `user_id` 硬覆盖）；工具契约 `_contract.py`（OpenAI function calling + 统一错误返回）；`agent/llm.py` 双模型 client（`MODEL` 主 / `LIGHT_MODEL` 轻，`chat(model=...)` 参数切换；§9 #11）
 - **工具 5/5**：`query_orders` / `query_product`（DB+md 融合）/ `query_policy` / `initiate_refund`（三道校验）/ `escalate_to_human`（终止型，按 name 硬切返回"已转接人工"）
 - **M5 意图路由**：`agent/router.py` 漏斗分类器 + 8 意图 `POLICY_MAP`（含 `negative_emotion`）+ `Agent.run_routed()` 编排；slim base + 资料/规则按意图下沉到 patch（`other` 兜底承载全量规则；catalog 通过 `_CATALOG_SNIPPET` 挂 `product_inquiry` + `other`）；`escalation` / `negative_emotion` 都走 fast_path
 - **M3 两层记忆**：`agent/memory/{events,short_term,long_term}.py`；`run_routed` 入口先压后跑；`RunResult.memory_events` 可观测；REPL 在 `/reset`/`/user`/`/quit`/ 转人工 时 `save_session`
 - **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #10）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
 - **M6 护栏**：`agent/guardrails/injection.py` 规则层预检（三类：角色劫持 / 提示泄露 / 越狱关键词；正序 + 中文倒装），`run_routed` 最前一道闸；命中 `intent="injection"` / `route_path="guardrails"` / 固定拒绝文案、0 LLM
-- **测试 & 人工**：126 pytest 全绿；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
+- **测试 & 人工**：129 pytest 全绿（含双模型分层 3 条契约测试）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
 
 ### 下一步
 
@@ -262,6 +263,7 @@ nana-agent/
 | 8 | Slim base + 规则/资料按意图下沉到 `prompt_patch` | base 仅身份+格式；catalog 与行为规则按意图挂 patch，每轮 tokens 更短；"routing 不只裁工具，还裁行为"成为路由叙事 |
 | 9 | 两层记忆：短期 Summary-Buffer（会话内压缩）+ 长期 per-user append-only md（冷启动 load 最近 3 段） | 短期解决会话膨胀，长期解决老客跨会话召回；`_lt_cache` 按轮重注入新 system，抵消 patch 替换 `messages[0]` |
 | 10 | 情绪感知并入 router 作独立 intent `negative_emotion`（与 `escalation` 共用 fast_path）；Prompt 注入独立 `guardrails` 层 | 情绪是"意图的延伸"、注入是"威胁行为，不是意图"——guardrails/router/ReAct 三层各司其职；注入纯正则够用，LLM 兜底延后到 W5 红队数据出来再加 |
+| 11 | 双模型分层：主 qwen-plus（ReAct 主循环）+ 轻量 qwen-turbo（路由分类 / 短期压缩 / 长期摘要）；`chat(model=...)` 参数注入 | 把"便宜之前跑贵的"思路从规则→LLM 再延伸到模型级：三处轻量任务无 tool use、输入短、输出短，plus 属于杀鸡用牛刀；成本随量下降，函数调用与最终答复质量不妥协。W5 E4 可加一组"全 plus / 分层 / 全 turbo"对比把代价讲清楚 |
 
 ---
 

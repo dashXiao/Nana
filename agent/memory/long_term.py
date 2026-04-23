@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from agent.llm import chat as default_chat
+from agent.llm import LIGHT_MODEL, chat as default_chat
 from agent.memory._render import render_for_summary
 from agent.memory.events import MemoryEvent
 
@@ -109,6 +109,7 @@ class LongTermMemory:
         dialogue = [m for m in messages if m.get("role") != "system"]
         if not dialogue:
             return ""
+        # 摘要任务：无 tool + 短输出，走 LIGHT_MODEL（PLAN §9 #11）
         try:
             resp = self._chat(
                 messages=[
@@ -116,6 +117,7 @@ class LongTermMemory:
                     {"role": "user", "content": render_for_summary(dialogue)},
                 ],
                 tools=None,
+                model=LIGHT_MODEL,
             )
             return (resp.choices[0].message.content or "").strip()
         except Exception as exc:  # noqa: BLE001

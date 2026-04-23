@@ -31,7 +31,7 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.core import Agent, RunResult  # noqa: E402
-from agent.llm import MODEL  # noqa: E402
+from agent.llm import LIGHT_MODEL, MODEL  # noqa: E402
 from agent.memory.long_term import LongTermMemory  # noqa: E402
 from agent.memory.short_term import ShortTermMemory  # noqa: E402
 from agent.router import BASE_SYSTEM_PROMPT, POLICY_MAP  # noqa: E402
@@ -150,7 +150,7 @@ def _flush_session_to_long_term(
 
 
 def run() -> None:
-    print(f"=== NanaShop Agent REPL · model: {MODEL} ===")
+    print(f"=== NanaShop Agent REPL · 主 {MODEL} / 轻 {LIGHT_MODEL} ===")
     print("启动时先 seed 一次，确保初始状态干净...")
     seed()
     print()
