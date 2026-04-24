@@ -9,7 +9,7 @@
 
 三层逻辑：
 1. 规则层：整串匹配极短高置信短语——0 次 LLM 调用
-2. LLM 分类：规则未命中时，单独一次 qwen-plus 调用，结构化 JSON 输出
+2. LLM 分类：规则未命中时，单独一次轻量模型调用，结构化 JSON 输出
 3. 默认兜底：分类失败 / 格式错 / 低置信度 → intent="other" + 全工具暴露
 
 简历角度：这是"cheap-before-expensive"的分层 classifier，与 ReAct 循环解耦；

@@ -3,7 +3,7 @@
 设计要点：
 - **只测确定性指标**：intent accuracy / tool call accuracy / phrase match / latency / tokens。
   Faithfulness / Helpfulness 等主观维度留给 E3 LLM-as-Judge。
-- **成本保护**：默认 --dry-run 只列要跑的样本；--run 才真的打 qwen-plus。
+- **成本保护**：默认 --dry-run 只列要跑的样本；--run 才真的打主模型。
 - **双模型 tokens 分桶**：包装 `agent.llm.chat` 抓 `response.usage`，按实际 model 累计，
   这是 §9 #11 "双模型分层省多少钱" 叙事的硬证据来源。
 - **preconditions**：long_term_blocks 落到临时目录的 md 文件，跑完整体清理，
@@ -23,6 +23,7 @@ import contextlib
 import dataclasses
 import io
 import json
+import os
 import sys
 import tempfile
 import time
@@ -54,11 +55,18 @@ def _reseed_db_silently() -> None:
     with contextlib.redirect_stdout(io.StringIO()):
         _seed_db()
 
-# qwen 系列计价（¥ / 百万 tokens，input / output）。
-# 数据为 portfolio 叙事级精度，真实 billing 以 DashScope 为准。
+# 计价（¥ / 百万 tokens，input / output）；读取 .env 的 LLM_MODEL_PRICING / LLM_LIGHT_MODEL_PRICING，
+# 按当前 .env 选定的 MODEL / LIGHT_MODEL 字符串建表。换模型时只改 .env，不动代码。
+# 数据为 portfolio 叙事级精度，真实 billing 以供应商为准。
+def _parse_pricing(env_var: str) -> tuple[float, float]:
+    raw = os.getenv(env_var, "")
+    parts = raw.split(",")
+    return (float(parts[0]), float(parts[1]))
+
+
 _PRICING_PER_1M: dict[str, tuple[float, float]] = {
-    "qwen-plus": (4.0, 12.0),
-    "qwen-turbo": (0.6, 2.0),
+    MODEL: _parse_pricing("LLM_MODEL_PRICING"),
+    LIGHT_MODEL: _parse_pricing("LLM_LIGHT_MODEL_PRICING"),
 }
 
 
@@ -142,7 +150,7 @@ def _make_capturing_chat(
     """包装 agent.llm.chat：保持行为不变，只把 response.usage 按 model 累加到字典。
 
     `force_model` 不为 None 时，覆盖所有下游调用方传入的 model——E4 消融里用来把
-    "分类/压缩/摘要"这些本来走 LIGHT_MODEL 的调用强制拉到 qwen-plus，复现"全 plus"配置。
+    "分类/压缩/摘要"这些本来走 LIGHT_MODEL 的调用强制拉到主模型，复现"全主模型"配置。
     """
     from agent.llm import chat as real_chat  # 延迟 import，避免环境变量未就绪报错
 
@@ -574,7 +582,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  - {s.id:<20} {s.scenario:<20} turns={len(s.turns)}")
 
     if not args.run:
-        print("\n[dry-run] 想真跑请加 --run（会调 qwen-plus，产生成本）")
+        print("\n[dry-run] 想真跑请加 --run（会调主模型，产生成本）")
         return 0
 
     print("\n开始跑样本…")

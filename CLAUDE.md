@@ -7,7 +7,7 @@
 **NanaShop Agent** —— 电商客服多轮对话 Agent，作者 xyh 的求职作品。
 
 - **单一事实来源是 `PLAN.md`**（根目录）——所有架构决策、模块清单、进度、决策日志都在那里
-- **技术栈**：qwen-plus（经 DashScope OpenAI 兼容端点）/ 自研 ReAct 循环 / SQLite + 文件系统 / 无向量库 / 无运行期 trace
+- **技术栈**：qwen 系列（DashScope OpenAI 兼容端点；具体型号见 `.env`，代码不写死）/ 自研 ReAct 循环 / SQLite + 文件系统 / 无向量库 / 无运行期 trace
 - **工具协议**：所有工具遵循 OpenAI function calling schema；返回统一 `{"ok": bool, "data" | "error_code" + "message"}`
 - **投入分配**：Agent 能力 60% / 评估体系 30% / 文档 10%
 
@@ -51,12 +51,13 @@
 uv sync                              # 安装/同步依赖
 uv run python scripts/seed.py        # 初始化/重置开发库（db/nana.db）
 uv run pytest -v                     # 跑全部测试
-uv run python scripts/smoke_llm.py   # qwen-plus tool-use 冒烟测试
+uv run python scripts/smoke_llm.py   # 主模型 tool-use 冒烟测试
 ```
 
 ## 5. 关键约束（与 PLAN.md §2 保持一致）
 
-- LLM 只用 qwen-plus，不做多模型路由
+- LLM 只用 qwen 系列（具体型号见 `.env`），不做跨供应商路由；主 + 轻量两档同一供应商分层（PLAN §9 #11）
+- **模型名字面量只允许出现在 `.env` / `.env.example`**——代码、注释、docs、测试 fixture 都不写死，便于切换 qwen 子型号不引发混乱
 - 存储只有 SQLite（仅交易数据） + 文件系统（md）；**无向量库、无 trace 表**
 - 知识分层：交易→DB / 商品→`knowledge/products/P*.md` / 政策→`knowledge/policies.md` / 记忆→`memory/sessions/{user_id}/*.md`
 - 种子数据全量写死：2 用户 / 3 商品 / 10 订单（含 3 条异常）

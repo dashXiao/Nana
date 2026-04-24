@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.llm import LIGHT_MODEL, MODEL
 from eval.ablation import (
     CONFIGS,
     AblationConfig,
@@ -77,13 +78,13 @@ def test_capturing_chat_force_model_overrides_downstream(monkeypatch):
     monkeypatch.setattr(agent.llm, "chat", fake_chat)
 
     usage: dict[str, TokenUsage] = {}
-    chat = _make_capturing_chat(usage, force_model="qwen-plus")
-    chat(messages=[], model="qwen-turbo")  # 传 turbo，但 force 拉到 plus
-    assert seen == ["qwen-plus"]
-    # 统计桶也落到 plus
-    assert "qwen-plus" in usage
-    assert usage["qwen-plus"].total == 15
-    assert "qwen-turbo" not in usage
+    chat = _make_capturing_chat(usage, force_model=MODEL)
+    chat(messages=[], model=LIGHT_MODEL)  # 传 LIGHT，但 force 拉到 MODEL
+    assert seen == [MODEL]
+    # 统计桶也落到主模型
+    assert MODEL in usage
+    assert usage[MODEL].total == 15
+    assert LIGHT_MODEL not in usage
 
 
 def test_capturing_chat_no_force_preserves_original_model(monkeypatch):
@@ -99,12 +100,12 @@ def test_capturing_chat_no_force_preserves_original_model(monkeypatch):
 
     usage: dict[str, TokenUsage] = {}
     chat = _make_capturing_chat(usage)  # force_model=None
-    chat(messages=[], model="qwen-turbo")
-    chat(messages=[], model="qwen-plus")
-    assert seen == ["qwen-turbo", "qwen-plus"]
+    chat(messages=[], model=LIGHT_MODEL)
+    chat(messages=[], model=MODEL)
+    assert seen == [LIGHT_MODEL, MODEL]
     # 两个 model 都独立计
-    assert usage["qwen-turbo"].total == 5
-    assert usage["qwen-plus"].total == 5
+    assert usage[LIGHT_MODEL].total == 5
+    assert usage[MODEL].total == 5
 
 
 # ---------- _select_configs ----------
@@ -116,8 +117,8 @@ def test_select_configs_default_returns_all():
 
 
 def test_select_configs_by_name():
-    got = _select_configs(["baseline", "all-plus"])
-    assert [c.name for c in got] == ["baseline", "all-plus"]
+    got = _select_configs(["baseline", "force-main"])
+    assert [c.name for c in got] == ["baseline", "force-main"]
 
 
 def test_select_configs_unknown_raises():
@@ -129,7 +130,7 @@ def test_configs_build_kwargs_match_design():
     """三配置的 build_kwargs 对应"分层 / 无分层 / 无按需加载"三种处理。"""
     by_name = {c.name: c for c in CONFIGS}
     assert by_name["baseline"].build_kwargs == {}
-    assert by_name["all-plus"].build_kwargs == {"force_model": "qwen-plus"}
+    assert by_name["force-main"].build_kwargs == {"force_model": MODEL}
     assert by_name["full-context"].build_kwargs == {"force_intent_other": True}
 
 
@@ -147,7 +148,7 @@ def _pass_sample(sid: str) -> SampleResult:
         phrases_expected_missing=(), phrases_forbidden_hit=(),
         phrases_expected_ok=True, phrases_forbidden_ok=True,
         latency_s=1.0,
-        tokens_by_model={"qwen-plus": TokenUsage(100, 50, 150)},
+        tokens_by_model={MODEL: TokenUsage(100, 50, 150)},
     )
 
 
@@ -159,8 +160,8 @@ def _mk_config_result(
     faith: float = 5.0,
     help_: float = 4.0,
     tone: float = 5.0,
-    plus_total: int = 150,
-    turbo_total: int = 0,
+    main_total: int = 150,
+    light_total: int = 0,
 ) -> ConfigResult:
     cfg = AblationConfig(name=name, build_kwargs={}, description=f"{name} desc")
     overall = ScenarioAgg()
@@ -172,10 +173,10 @@ def _mk_config_result(
     overall.phrases_expected_hits = passed
     overall.phrases_forbidden_clean = passed
     overall.latency_total_s = 1.0 * samples
-    if plus_total:
-        overall.tokens["qwen-plus"] = TokenUsage(plus_total // 2, plus_total // 2, plus_total)
-    if turbo_total:
-        overall.tokens["qwen-turbo"] = TokenUsage(turbo_total // 2, turbo_total // 2, turbo_total)
+    if main_total:
+        overall.tokens[MODEL] = TokenUsage(main_total // 2, main_total // 2, main_total)
+    if light_total:
+        overall.tokens[LIGHT_MODEL] = TokenUsage(light_total // 2, light_total // 2, light_total)
 
     dims = {
         "faithfulness": DimAgg(mean=faith, n=samples),
@@ -195,22 +196,22 @@ def _mk_config_result(
 def test_format_comparison_table_contains_all_configs():
     results = [
         _mk_config_result("baseline", passed=3, samples=3,
-                          plus_total=300, turbo_total=100, faith=4.8),
-        _mk_config_result("all-plus", passed=3, samples=3,
-                          plus_total=500, turbo_total=0, faith=4.8),
+                          main_total=300, light_total=100, faith=4.8),
+        _mk_config_result("force-main", passed=3, samples=3,
+                          main_total=500, light_total=0, faith=4.8),
         _mk_config_result("full-context", passed=2, samples=3,
-                          plus_total=800, turbo_total=100, faith=4.2),
+                          main_total=800, light_total=100, faith=4.2),
     ]
     table = format_comparison_table(results)
     # 三个 config 名字都出现
-    for n in ("baseline", "all-plus", "full-context"):
+    for n in ("baseline", "force-main", "full-context"):
         assert n in table
     # 两张表的表头都要有
     assert "E2" in table and "E3" in table
     # 对比关键列
     assert "pass" in table
     assert "faith" in table
-    assert "tok_plus" in table
+    assert "tok_main" in table
     # 判 cost 列出现
     assert "¥" in table
     # Judge 自身开销块

@@ -2,8 +2,8 @@
 
 设计要点：
 - **三配置**：
-  - `baseline`：分层模型（ReAct=qwen-plus / 路由+记忆=qwen-turbo） + 路由按需加载 patch
-  - `all-plus`：所有 chat 强制 qwen-plus，关掉分层；预期 token 成本升、质量不升
+  - `baseline`：分层模型（ReAct=主模型 / 路由+记忆=轻量模型） + 路由按需加载 patch
+  - `force-main`：所有 chat 强制走主模型，关掉分层；预期 token 成本升、质量不升
   - `full-context`：始终判定 intent=other，走 `other` 兜底 patch（全量通用规则 + 全 5 工具）；
     预期 per-turn prompt 变长（多挂了规则/catalog），token 上升，质量不升
 - **轻改 harness**：`build_agent` 新增 `force_model` / `force_intent_other`，默认不变
@@ -13,7 +13,7 @@
 CLI:
     uv run python -m eval.ablation --smoke              # 冒烟：3 config × 1 sample
     uv run python -m eval.ablation --run                # 全量：3 config × 24 samples
-    uv run python -m eval.ablation --run --configs baseline all-plus
+    uv run python -m eval.ablation --run --configs baseline force-main
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from agent.llm import MODEL
+from agent.llm import LIGHT_MODEL, MODEL
 
 from eval import harness, judge
 from eval.harness import SampleResult, ScenarioAgg, TokenUsage, _estimate_cost
@@ -54,9 +54,9 @@ CONFIGS: tuple[AblationConfig, ...] = (
         description="分层模型 + 路由按需加载（本方案）",
     ),
     AblationConfig(
-        name="all-plus",
-        build_kwargs={"force_model": "qwen-plus"},
-        description="所有 chat 强制 qwen-plus，关掉双模型分层",
+        name="force-main",
+        build_kwargs={"force_model": MODEL},
+        description="所有 chat 强制走主模型，关掉双模型分层",
     ),
     AblationConfig(
         name="full-context",
@@ -72,7 +72,7 @@ CONFIGS: tuple[AblationConfig, ...] = (
 def _make_judge_chat(tokens_sink: TokenUsage) -> ChatFn:
     """Judge 的 chat 独立于 agent 预算统计；本函数只管把 judge 的用量挤到 sink。
 
-    不切模型（judge 一律 MODEL=qwen-plus）。
+    不切模型（judge 一律 MODEL，即主模型）。
     """
     from agent.llm import chat as real_chat
 
@@ -159,8 +159,8 @@ def format_comparison_table(results: list[ConfigResult]) -> str:
         f"{'pass':>5} "
         f"{'intent':>6} "
         f"{'tool ✓':>6} "
-        f"{'tok_plus':>9} "
-        f"{'tok_turbo':>9} "
+        f"{'tok_main':>9} "
+        f"{'tok_light':>9} "
         f"{'cost':>8} "
         f"{'lat_avg':>7}"
     )
@@ -169,8 +169,8 @@ def format_comparison_table(results: list[ConfigResult]) -> str:
     for r in results:
         overall = r.agent_agg["_overall"]
         n = overall.samples
-        plus = overall.tokens.get("qwen-plus", TokenUsage()).total
-        turbo = overall.tokens.get("qwen-turbo", TokenUsage()).total
+        main_tok = overall.tokens.get(MODEL, TokenUsage()).total
+        light_tok = overall.tokens.get(LIGHT_MODEL, TokenUsage()).total
         cost = _estimate_cost(overall.tokens)
         lat = overall.latency_total_s / n if n else 0.0
         lines.append(
@@ -179,8 +179,8 @@ def format_comparison_table(results: list[ConfigResult]) -> str:
             f"{_pct(overall.passed, n):>5} "
             f"{_pct(overall.intent_hits, n):>6} "
             f"{_pct(overall.tools_expected_hits, n):>6} "
-            f"{plus:>9} "
-            f"{turbo:>9} "
+            f"{main_tok:>9} "
+            f"{light_tok:>9} "
             f"{'¥' + format(cost, '.4f'):>8} "
             f"{lat:6.1f}s"
         )
@@ -217,7 +217,7 @@ def format_comparison_table(results: list[ConfigResult]) -> str:
     total_judge = TokenUsage()
     for r in results:
         total_judge.merge(r.judge_tokens)
-    judge_cost = _estimate_cost({"qwen-plus": total_judge})
+    judge_cost = _estimate_cost({MODEL: total_judge})
     lines.append(
         f"judge total tokens = {total_judge.total} "
         f"(prompt={total_judge.prompt} / completion={total_judge.completion}) "

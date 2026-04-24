@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+from agent.llm import LIGHT_MODEL, MODEL
 from eval.harness import (
     ScenarioAgg,
     SampleResult,
     TokenUsage,
     _estimate_cost,
     _filter_samples,
+    _PRICING_PER_1M,
     _score_phrases,
     _score_tools,
     aggregate,
@@ -146,7 +148,7 @@ def test_score_run_all_green():
         observed_tools=("query_product",),
         final_answer="售价 299",
         latency_s=1.23,
-        tokens_by_model={"qwen-plus": TokenUsage(100, 50, 150)},
+        tokens_by_model={MODEL: TokenUsage(100, 50, 150)},
         turns_count=1,
     )
     assert r.passed is True
@@ -155,7 +157,7 @@ def test_score_run_all_green():
     assert r.phrases_expected_ok is True
     assert r.latency_s == 1.23
     # tokens 应做深拷贝，不与外部同一对象
-    assert r.tokens_by_model["qwen-plus"].total == 150
+    assert r.tokens_by_model[MODEL].total == 150
 
 
 def test_score_run_error_short_circuits_passed():
@@ -241,14 +243,14 @@ def _pass_result(sid: str, scenario: str = "x") -> SampleResult:
         phrases_expected_missing=(), phrases_forbidden_hit=(),
         phrases_expected_ok=True, phrases_forbidden_ok=True,
         latency_s=1.0,
-        tokens_by_model={"qwen-plus": TokenUsage(100, 50, 150)},
+        tokens_by_model={MODEL: TokenUsage(100, 50, 150)},
     )
 
 
 def _fail_result(sid: str, scenario: str = "x") -> SampleResult:
     r = _pass_result(sid, scenario)
     r.intent_match = False
-    r.tokens_by_model = {"qwen-turbo": TokenUsage(80, 20, 100)}
+    r.tokens_by_model = {LIGHT_MODEL: TokenUsage(80, 20, 100)}
     return r
 
 
@@ -271,8 +273,8 @@ def test_aggregate_sums_tokens_across_models():
     results = [_pass_result("a"), _fail_result("b")]
     agg = aggregate(results)
     tokens = agg["_overall"].tokens
-    assert tokens["qwen-plus"].total == 150
-    assert tokens["qwen-turbo"].total == 100
+    assert tokens[MODEL].total == 150
+    assert tokens[LIGHT_MODEL].total == 100
 
 
 def test_format_table_contains_scenarios_and_overall():
@@ -281,28 +283,32 @@ def test_format_table_contains_scenarios_and_overall():
     assert "OVERALL" in table
     assert "x" in table
     assert "y" in table
-    assert "qwen-plus" in table
+    assert MODEL in table
 
 
 # ---------- _estimate_cost ----------
 
 
 def test_estimate_cost_sums_per_model():
-    # 100w prompt 的 qwen-plus = 100 * 4 = 400；但这里走小数：
-    # 1_000 prompt * 4 / 1_000_000 = 0.004
+    """成本 = Σ (prompt * input_price + completion * output_price) / 1M。
+    价格走 .env（_PRICING_PER_1M），所以测试也按当前配置取价 + 算期望。"""
+    main_in, main_out = _PRICING_PER_1M[MODEL]
+    light_in, light_out = _PRICING_PER_1M[LIGHT_MODEL]
     tokens = {
-        "qwen-plus": TokenUsage(prompt=1_000, completion=500, total=1_500),
-        "qwen-turbo": TokenUsage(prompt=2_000, completion=1_000, total=3_000),
+        MODEL: TokenUsage(prompt=1_000, completion=500, total=1_500),
+        LIGHT_MODEL: TokenUsage(prompt=2_000, completion=1_000, total=3_000),
     }
     cost = _estimate_cost(tokens)
-    # qwen-plus: 1000*4/1M + 500*12/1M = 0.004 + 0.006 = 0.010
-    # qwen-turbo: 2000*0.6/1M + 1000*2/1M = 0.0012 + 0.002 = 0.0032
-    expected = 0.010 + 0.0032
+    expected = (
+        (1_000 * main_in + 500 * main_out) / 1_000_000
+        + (2_000 * light_in + 1_000 * light_out) / 1_000_000
+    )
     assert abs(cost - expected) < 1e-9
 
 
 def test_estimate_cost_ignores_unknown_model():
-    tokens = {"claude-opus-4-7": TokenUsage(1_000, 500, 1_500)}
+    """未在 _PRICING_PER_1M 中登记的模型名应被忽略（cost=0），不抛错。"""
+    tokens = {"unknown-model-xyz": TokenUsage(1_000, 500, 1_500)}
     assert _estimate_cost(tokens) == 0.0
 
 

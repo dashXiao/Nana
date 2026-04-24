@@ -1,8 +1,8 @@
-"""qwen-plus tool-use 冒烟测试。
+"""主模型 tool-use 冒烟测试（具体型号见 .env）。
 
 目的：
 - 验证 DASHSCOPE_API_KEY 生效、OpenAI 兼容端点可通
-- 验证 `ToolSpec` → OpenAI tools schema 的转换能被 qwen-plus 正确理解
+- 验证 `ToolSpec` → OpenAI tools schema 的转换能被主模型正确理解
 - 打印完整 function-calling 往返，供后续 ReAct 循环参考
 
 跑法：uv run python scripts/smoke_llm.py
