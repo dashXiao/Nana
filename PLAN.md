@@ -149,14 +149,15 @@ user_id: U001
 
 ## 5. 评估体系（最大亮点）
 
-- [ ] **E1 · 评测集**：80–100 条样本，覆盖 6 个 Fixture 剧本
-  - [ ] 愤怒的催单客户（情绪识别 + 升级）
-  - [ ] 退货流程（多工具编排：查订单 → 查政策 → LLM 自判时效 → 执行；含超期应被对话层拦下、不调 initiate_refund 的负例）
-  - [ ] 政策咨询新客（`query_policy`，"几天内可以退"）
-  - [ ] 商品咨询（`query_product` 多源融合，"X1 耳机续航多久，还有货吗"）
-  - [ ] 老客复购（长期记忆 + 跨会话召回，"我上次买的那款现在发货没"）
-  - [ ] 恶意用户（护栏：越权查/退订单、Prompt 注入）
-  - 每条样本含：输入对话、期望工具调用序列、期望信息点、禁止行为
+- [~] **E1 · 评测集**：首批 24 条样本落地 `eval/datasets/*.yaml`（6 剧本 × 3–5 条），loader 完整；扩到 80–100 后关闭
+  - [x] 愤怒的催单客户（情绪识别 + 升级）：4 条
+  - [x] 退货流程（多工具编排：查订单 → 查政策 → LLM 自判时效 → 执行；含超期 / 越权 / 已退三类负例）：5 条
+  - [x] 政策咨询新客（`query_policy`，退货时效 / 到账 / 发货时效 / 地址修改）：4 条
+  - [x] 商品咨询（`query_product` DB+md 融合；含多商品批查）：4 条
+  - [x] 老客复购（长期记忆跨会话召回；样本带 `preconditions.long_term_blocks`）：3 条
+  - [x] 恶意用户（护栏：注入 / 越权退款 / 越权查）：4 条
+  - 样本 schema：`id` / `intent` / `user_id` / `turns` / `expected_tools` / `expected_phrases` / `forbidden_tools` / `forbidden_phrases` / `notes` / `preconditions`
+  - [ ] 扩量到 80–100（优先补覆盖不足的边界 case，W5 中后期做）
 - [ ] **E2 · 自动指标**（由 eval harness 现场统计，不依赖运行期 trace）
   - [ ] Task Success Rate
   - [ ] Tool Call Accuracy（顺序 + 参数）
@@ -223,11 +224,14 @@ nana-agent/
 - **M3 两层记忆**：`agent/memory/{events,short_term,long_term}.py`；`run_routed` 入口先压后跑；`RunResult.memory_events` 可观测；REPL 在 `/reset`/`/user`/`/quit`/ 转人工 时 `save_session`
 - **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #10）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
 - **M6 护栏**：`agent/guardrails/injection.py` 规则层预检（三类：角色劫持 / 提示泄露 / 越狱关键词；正序 + 中文倒装），`run_routed` 最前一道闸；命中 `intent="injection"` / `route_path="guardrails"` / 固定拒绝文案、0 LLM
-- **测试 & 人工**:129 pytest 全绿（含双模型分层 3 条契约测试；退款工具层新增"天数不校验"不变式测试锁定架构决策）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
+- **测试 & 人工**:140 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 11 条校验）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
+- **E1 评测集首批**：`eval/datasets/*.yaml` 6 剧本 × 3–5 条共 24 样本；`eval/loader.py` 做 id 唯一 / intent / user_id / 工具名 / turns 非空校验（§5 E1）
 
 ### 下一步
 
-- W5 评测体系：E1 评测集建立（80–100 条样本，覆盖 §5 的 6 个 Fixture 剧本）、E2 自动指标 harness、E3 LLM-as-Judge、E4 消融（记忆/检索/组件三路对比）、E5 红队
+- E2 自动指标 harness：用 `eval/loader` 拿首批 24 条跑通 Task Success / Tool Call Accuracy / Faithfulness 的 MVP
+- 样本扩量到 80–100（与 E2 形成"样本扩、指标稳"的正反馈）
+- E3 LLM-as-Judge、E4 消融、E5 红队依次展开
 - 红队数据出来后，给 `agent/guardrails/injection.py` 加 LLM 分类兜底层（规则漏召回补刀）
 
 ---

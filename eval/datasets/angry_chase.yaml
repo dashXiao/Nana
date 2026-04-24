@@ -1,0 +1,54 @@
+# 剧本 1：愤怒的催单客户
+#
+# 考察点：情绪识别 + 升级路径
+# - 规则层（12 词正则）能命中最激烈的辱骂语
+# - LLM 分类器能识别"长时间催单无辱骂词"的隐式情绪
+# - 显式"转人工"三字直接 escalation 意图 fast_path
+# 无论哪条命中，expected_tools 都应是 [escalate_to_human]，终答含"已转接人工"。
+scenario: angry_chase
+description: 情绪识别 + 升级路径；规则层 / LLM 分类器 / 显式转人工三条击中路径
+
+samples:
+  - id: anger-01
+    intent: negative_emotion
+    user_id: U002
+    turns:
+      - "我等了快一个月还没收到，你们骗子吗？投诉你们！"
+    expected_tools: [escalate_to_human]
+    expected_phrases: [已转接人工]
+    forbidden_tools: [initiate_refund]
+    forbidden_phrases: []
+    notes: "规则层 12 词（骗子/投诉）直接命中 negative_emotion，走 fast_path。"
+
+  - id: anger-02
+    intent: negative_emotion
+    user_id: U002
+    turns:
+      - "我下单 20 天了一点动静都没有，这是在糊弄人吧。"
+    expected_tools: [escalate_to_human]
+    expected_phrases: [已转接人工]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: "无辱骂词，但情绪隐式。依赖 LLM 分类器（规则层漏召回补刀用）。"
+
+  - id: anger-03
+    intent: escalation
+    user_id: U001
+    turns:
+      - "转人工"
+    expected_tools: [escalate_to_human]
+    expected_phrases: [已转接人工]
+    forbidden_tools: [query_orders, query_policy, query_product, initiate_refund]
+    forbidden_phrases: []
+    notes: "三字显式指令必须直接 escalation 意图 fast_path，不得先去查任何东西。"
+
+  - id: anger-04
+    intent: escalation
+    user_id: U002
+    turns:
+      - "找真人"
+    expected_tools: [escalate_to_human]
+    expected_phrases: [已转接人工]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: "『找真人』同样是显式转人工意图（规则层负样本覆盖点）。"

@@ -1,0 +1,65 @@
+# 剧本 4：商品咨询
+#
+# 考察点：product_inquiry 意图 + catalog 指名→ID → query_product 融合 DB+md
+# - 用户用自然名（"X1 耳机"）时 LLM 应映射到 product_id 再调工具
+# - 参数/价格/库存必须走工具，不得凭记忆答
+# - 允许一次查询多个商品（列表参数）
+#
+# 种子事实：
+#   P001 无线蓝牙耳机 X1    299.0  库存 50
+#   P002 智能手表 Pro       899.0  库存 30
+#   P003 人体工学办公椅    1299.0  库存 20
+scenario: product_inquiry
+description: catalog 指名 + 多源融合；Faithfulness 同样是核心衡量
+
+samples:
+  - id: product-01
+    intent: product_inquiry
+    user_id: U001
+    turns:
+      - "那个 X1 耳机续航多久，现在还有货吗？"
+    expected_tools: [query_product]
+    expected_phrases: ["299", "50"]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: |
+      自然名『X1 耳机』→ P001 的映射由 prompt patch 里的 catalog 片段兜住。
+      答案应含价格 299 与库存 50（或『有货』类表述 + 数字）。
+
+  - id: product-02
+    intent: product_inquiry
+    user_id: U002
+    turns:
+      - "智能手表 Pro 多少钱？"
+    expected_tools: [query_product]
+    expected_phrases: ["899"]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: "最直白的价格问。禁止凭记忆。"
+
+  - id: product-03
+    intent: product_inquiry
+    user_id: U001
+    turns:
+      - "办公椅和耳机分别是什么价？"
+    expected_tools: [query_product]
+    expected_phrases: ["299", "1299"]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: "一次查多个商品（query_product 接受 product_ids 列表）。"
+
+  - id: product-04
+    intent: product_inquiry
+    user_id: U002
+    turns:
+      - "智能手表支持 eSIM 吗？电池多少毫安？"
+    expected_tools: [query_product]
+    expected_phrases: []
+    forbidden_tools: []
+    forbidden_phrases: ["mAh", "毫安"]
+    notes: |
+      Faithfulness 硬核用例：P002.md 完全没提 eSIM、也没给电池 mAh 数。
+      期望 agent 如实承认『这部分资料没有』，不得编造 battery 数字——
+      因此 forbidden_phrases 堵 "mAh" / "毫安"，任何出现即为 hallucination。
+      expected_phrases 留空：『是否承认无知』难用字符串断言，留给 E3 Judge。
+      eSIM 一词本身不禁——agent 可以合法地『答复里提到 eSIM 但说无资料』。

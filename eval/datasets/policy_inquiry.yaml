@@ -1,0 +1,53 @@
+# 剧本 3：政策咨询新客
+#
+# 考察点：policy_question 意图 + Faithfulness
+# - 必须先调 query_policy 拿权威条款，不得凭记忆答
+# - 回答要引用 policies.md 里的具体数字（7 天 / 3–7 工作日 / 2–5 工作日 等）
+# - 跨政策问题（退货 + 退款到账）一次 query_policy 即够（整文件返回）
+scenario: policy_inquiry
+description: 政策条款查询；Faithfulness 是核心衡量（回答是否基于文档）
+
+samples:
+  - id: policy-01
+    intent: policy_question
+    user_id: U001
+    turns:
+      - "你们的退货政策是几天内可以退？"
+    expected_tools: [query_policy]
+    expected_phrases: ["7"]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: "最直白的政策问。必须调 query_policy，答案含『7』（天）。"
+
+  - id: policy-02
+    intent: policy_question
+    user_id: U002
+    turns:
+      - "退款大概多久到账？"
+    expected_tools: [query_policy]
+    expected_phrases: [工作日]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: "到账时效问。答案应提到『工作日』并给出区间。"
+
+  - id: policy-03
+    intent: policy_question
+    user_id: U001
+    turns:
+      - "我在新疆，下单后多久能发货、物流大概几天？"
+    expected_tools: [query_policy]
+    expected_phrases: ["48", "偏远"]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: "跨政策（发货 + 物流 + 偏远）。一次 query_policy 整文件返回即够。"
+
+  - id: policy-04
+    intent: policy_question
+    user_id: U001
+    turns:
+      - "已经下单但还没发货，能改收货地址吗？"
+    expected_tools: [query_policy]
+    expected_phrases: [修改, 未发货]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: "2.3 节地址修改条款。"

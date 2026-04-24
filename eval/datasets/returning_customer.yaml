@@ -1,0 +1,66 @@
+# 剧本 5：老客复购（跨会话记忆）
+#
+# 考察点：长期记忆 per-user 单 md 的加载与召回
+# - 上一次会话压成的长期块（最近 3 段）应在冷启动 system 里可见
+# - LLM 不再重新追问已知信息（如"你上次买的什么"），而是直接基于记忆回复
+# - 样本需预置 memory/sessions/{user_id}.md fixture 或由 harness 打桩
+#
+# v1 注意：harness 对"加载长期记忆"的打桩形态暂未落定，
+# 本剧本样本以 `preconditions` 字段表达"测前需要注入的长期记忆片段"，
+# 让 E2 harness 决定是落盘到真实 md 还是直接拼到 system 里。
+scenario: returning_customer
+description: 长期记忆跨会话召回；样本带 preconditions 声明前置记忆
+
+samples:
+  - id: returning-01
+    intent: order_query
+    user_id: U001
+    preconditions:
+      long_term_blocks:
+        - |
+          ## 2026-04-20 15:40
+          用户关注 P001 无线蓝牙耳机 X1 的发货进度；已下单 O001，当时未发货。
+    turns:
+      - "我上次问的那个耳机，现在发货了吗？"
+    expected_tools: [query_orders]
+    expected_phrases: [O001]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: |
+      指代消解依赖长期记忆块里的『P001 耳机 → O001』。
+      LLM 应直接定位 O001 并查订单，而不是追问『您上次买的是什么』。
+
+  - id: returning-02
+    intent: refund_request
+    user_id: U001
+    preconditions:
+      long_term_blocks:
+        - |
+          ## 2026-04-18 10:23
+          用户对 O003（人体工学办公椅 P003）咨询过退货事宜，当时未决定；
+          发货日 2026-04-20 附近。
+    turns:
+      - "我之前说的那单椅子，决定退了。"
+    expected_tools: [query_orders, query_policy, initiate_refund]
+    expected_phrases: [O003]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: "记忆消解 +退货流程编排合并考察。"
+
+  - id: returning-03
+    intent: product_inquiry
+    user_id: U001
+    preconditions:
+      long_term_blocks:
+        - |
+          ## 2026-04-15 09:00
+          用户询问过 P002 智能手表 Pro 的续航参数。
+    turns:
+      - "手表那款补货了吗？"
+    expected_tools: [query_product]
+    expected_phrases: ["30", "手表"]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: |
+      『那款』代词应被记忆消解到 P002。库存 30 由 query_product 兜底；
+      若 LLM 反问『哪款手表』即视为长期记忆召回失败。
