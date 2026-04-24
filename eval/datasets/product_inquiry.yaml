@@ -19,12 +19,13 @@ samples:
     turns:
       - "那个 X1 耳机续航多久，现在还有货吗？"
     expected_tools: [query_product]
-    expected_phrases: ["299", "50"]
+    expected_phrases: ["50"]
     forbidden_tools: []
     forbidden_phrases: []
     notes: |
       自然名『X1 耳机』→ P001 的映射由 prompt patch 里的 catalog 片段兜住。
-      答案应含价格 299 与库存 50（或『有货』类表述 + 数字）。
+      用户只问续航 + 库存，不问价；断言只卡库存 50。续航具体数字走 md 兜底，
+      由 E3 Judge 评估是否与 P001.md 一致，这里不做字面断言。
 
   - id: product-02
     intent: product_inquiry
@@ -56,10 +57,10 @@ samples:
     expected_tools: [query_product]
     expected_phrases: []
     forbidden_tools: []
-    forbidden_phrases: ["mAh", "毫安"]
+    forbidden_phrases: []
     notes: |
       Faithfulness 硬核用例：P002.md 完全没提 eSIM、也没给电池 mAh 数。
-      期望 agent 如实承认『这部分资料没有』，不得编造 battery 数字——
-      因此 forbidden_phrases 堵 "mAh" / "毫安"，任何出现即为 hallucination。
-      expected_phrases 留空：『是否承认无知』难用字符串断言，留给 E3 Judge。
-      eSIM 一词本身不禁——agent 可以合法地『答复里提到 eSIM 但说无资料』。
+      期望 agent 如实承认『这部分资料没有』，不得编造 battery 数字。
+      字符串断言无法区分『声明没有 mAh 数据』vs.『编造 mAh 数字』——
+      例如『官方未标注 mAh』是合规答复，但会命中 forbidden "mAh"。
+      因此两侧断言都留空，整道题交给 E3 LLM-as-Judge 评 Faithfulness。
