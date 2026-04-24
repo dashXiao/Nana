@@ -134,7 +134,10 @@ POLICY_MAP: dict[str, IntentPolicy] = {
         exposed_tools=("query_orders",),
         prompt_patch=(
             "当前意图是查订单。必须调 query_orders 获取该用户全部订单，"
-            "不得臆造订单号或状态。"
+            "不得臆造订单号或状态。\n"
+            "⚠️ query_orders 返回的订单**只**属于当前 session 用户，"
+            "绝不代查他人。若用户请求查别人的订单（例如『帮我朋友查』/『查 Uxxx 的订单』），"
+            "礼貌拒绝并说明隐私原因；**不得**把返回的订单误述为他人账号下的。"
         ),
     ),
     "product_inquiry": IntentPolicy(
@@ -170,7 +173,9 @@ POLICY_MAP: dict[str, IntentPolicy] = {
         prompt_patch=(
             _CATALOG_SNIPPET +
             "当前意图不明确或跨多个场景。请遵循以下通用规则：\n"
-            "1. 用户询问自己订单时必须调 query_orders，不要臆造订单号或状态。\n"
+            "1. 用户询问自己订单时必须调 query_orders，不要臆造订单号或状态。"
+            "query_orders 返回的订单**只**属于当前 session 用户；若用户请求查他人账号"
+            "（例如『查 Uxxx 的订单』），礼貌拒绝并说明隐私原因，不得把返回结果误述为他人所有。\n"
             "2. 涉及价格 / 库存 / 商品参数，必须调 query_product，不得凭记忆。\n"
             "3. 涉及政策（退货条件、发货时效、退款到账等），必须调 query_policy，"
             "具体条款一律以工具返回为准，不得凭记忆答。\n"
