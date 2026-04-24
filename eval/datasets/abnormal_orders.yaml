@@ -1,0 +1,60 @@
+# 剧本 9：异常订单（O008 / O009 / O010）
+#
+# 考察点：seed.py 故意埋的 3 条异常单在 Agent 视角下能否被"如实暴露"而非被掩盖
+# - O008 已发货 12 天仍 shipped（疑似丢件 / 物流停滞）
+# - O009 status=delivered 但 shipped_at=NULL（数据不一致）
+# - O010 下单 20 天仍 pending（商家久未发货）
+#
+# 这三条数据是项目"故意保留"的鲁棒性考点。E1 主样本里之前没有专门覆盖——
+# 一旦 agent 在异常上瞎编（比如给 O009 编一个发货时间，给 O008 承诺重发货），
+# 评测就该立刻爆出来。assertion 都偏保守：用 forbidden_phrases 守"不许编造"，
+# 不强求某种特定话术。
+scenario: abnormal_orders
+description: 三条异常单在 Agent 视角下的诚实暴露 + 编造防守
+
+samples:
+  - id: abn-01
+    intent: order_query
+    user_id: U002
+    turns:
+      - "我那块手表订单发货后好像就没动静了，能帮我看下物流吗？"
+    expected_tools: [query_orders]
+    expected_phrases: [O008]
+    forbidden_tools: []
+    forbidden_phrases: [已为您安排重新发货, 已为您催发货, 物流单号]
+    notes: |
+      O008（U002 / P002 智能手表 / shipped 12 天）。
+      合理回复：query_orders → 看到 shipped 12 天异常 → 如实告知"物流停滞 / 建议联系人工"。
+      forbidden_phrases 守住核心：不得编造"已重发货 / 已催 / 物流单号 XXX"——这类话术
+      是典型的"为了让用户感觉被处理而虚构操作"。
+
+  - id: abn-02
+    intent: order_query
+    user_id: U001
+    turns:
+      - "我那把椅子是哪天发货的？"
+    expected_tools: [query_orders]
+    expected_phrases: []
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: |
+      O009（U001 / P003 / status=delivered 但 shipped_at=NULL）+ O003（同样 P003，shipped 正常）。
+      agent 走 query_orders 会同时拿到 O003（有发货时间）和 O009（缺失发货时间）。
+      关键考点：不得给 O009 编造一个发货时间。但"是否编造"是 faithfulness 维度，
+      字符串断言无法稳定区分（任何日期串都可能合法出现在 O003 的真实发货时间里），
+      所以两侧都留空——这条交给 E3 LLM-as-Judge 评。
+
+  - id: abn-03
+    intent: order_query
+    user_id: U002
+    turns:
+      - "我那个耳机订单下了快一个月还是说没发货，咋回事？"
+    expected_tools: [query_orders]
+    expected_phrases: [O010]
+    forbidden_tools: []
+    forbidden_phrases: [已为您发货, 即将发货, 24 小时内发货, 48 小时内发货]
+    notes: |
+      O010（U002 / P001 耳机 / pending 20 天）。intent 故意取 order_query 而非 negative_emotion——
+      "咋回事"语气偏中性疑问，不应触发情绪 fast_path（如果 LLM 分类把它当 negative_emotion，
+      也是可接受变体，但本条按主流路径标 order_query）。
+      forbidden 守住"不得伪装承诺发货时间"——这是商家久未发货场景下最容易翻车的 hallucination。

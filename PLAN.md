@@ -215,7 +215,7 @@ nana-agent/
 
 ## 7. 里程碑与当前进展
 
-**当前阶段**：W5 评估体系 E1–E5 全部落地（E1 24+15=39 样本 / E2 基线 88% pass / E3 三维度 Judge / E4 三配置消融 / E5 红队 15 条 93% 拦截，1 条真实 bypass 保留），W5 仅剩 E1 扩量 + E3 K=3；W6 Gradio Demo + 调试轨迹面板已落地，Docker / README / blog 排队。
+**当前阶段**：W5 评估体系 E1–E5 全部落地（E1 42+15=57 样本，9 剧本 / E2 基线 88% pass（24 样本时） / E3 三维度 Judge / E4 三配置消融 / E5 红队 15 条 93% 拦截，1 条真实 bypass 保留）。E1 已扩到 9 剧本 57 样本（新增 chitchat_other / abnormal_orders 两本，主样本 24→42）但未重跑 E2/E3/E4。W5 仅剩 E2/E3/E4 在新样本上重跑 + E3 K=3；W6 Gradio Demo + 调试轨迹面板已落地，Docker / README / blog 排队。
 
 | 周 | 目标 | 状态 |
 |---|---|---|
@@ -236,7 +236,7 @@ nana-agent/
 - **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #10）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
 - **M6 护栏**：`agent/guardrails/injection.py` 规则层预检（三类：角色劫持 / 提示泄露 / 越狱关键词；正序 + 中文倒装），`run_routed` 最前一道闸；命中 `intent="injection"` / `route_path="guardrails"` / 固定拒绝文案、0 LLM
 - **测试 & 人工**：243 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 14 条校验 + 红队 attack_family 契约；E2 harness 打分/过滤/聚合 24 条；E3 judge prompt/parse/聚合 24 条；E4 ablation 纯函数/ForcedOtherRouter/对比表 11 条；E5 red_team 聚合纯函数 14 条；W6 webui 事件层 respond / new_conv / switch_user + trace 格式化 27 条）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
-- **E1 评测集首批**：`eval/datasets/*.yaml` 6 剧本 × 3–5 条共 24 样本；`eval/loader.py` 做 id 唯一 / intent / user_id / 工具名 / turns 非空校验（§5 E1）
+- **E1 评测集首批 + 扩容**：`eval/datasets/*.yaml` 9 剧本共 57 样本（主样本 42 + 红队 15）。首批 6 剧本 24 条→扩 5 剧本各加 2–3 条 + 新增 `chitchat_other`（4）/ `abnormal_orders`（3）两本——补 chitchat / other 兜底分支 + 异常单（O008/O009/O010）的诚实暴露考点。每条新样本对应一个独立行为信号（U002 happy / 指代歧义 / 不存在商品 / 升级关键词正则盖不到 / 多块长期记忆挑对 等），不做同形复制。`eval/loader.py` 做 id 唯一 / intent / user_id / 工具名 / turns 非空 / attack_family 校验（§5 E1）
 - **E2 自动指标 harness**：`eval/harness.py` CLI 跑通 24 条基线 **88% pass**；双模型 tokens 分桶 + 成本估算；样本间 DB reseed；SampleResult 携带完整 tool_calls（args+result）供 E3 消费
 - **E3 LLM-as-Judge**：`eval/judge.py` 三维度锚点化 rubric；24 条基线均值 faith=4.83 / help=4.71 / tone=4.92；抓到 E2 漏报的 adv-04 归属错误
 - **E4 消融**：`eval/ablation.py` 三配置矩阵（baseline / all-plus / full-context）复用 harness+judge；harness 支持 `force_model` / `force_intent_other` 两把扳手；首轮数据证实分层省 30% 成本不损质、按需加载省 70% 成本兼兜住 intent 分桶
@@ -249,7 +249,7 @@ nana-agent/
 - 基于 E3 / E4 发现继续修弱点：
   - **returning-02 新问题**（E4 baseline faith=2/help=3/tone=4）：长期记忆+多工具编排下答复失实——待 K=3 复现后定位
   - **intent 漂移**：policy-04 / refund-04 路由 few-shot 迭代
-- 样本扩量到 80–100（与 E2 形成"样本扩、指标稳"的正反馈），扩量后重跑 E4 消融用更稳的 Task Success 叙事
+- E1 已扩到 57 条（42 主 + 15 红队，9 剧本），需在新样本上重跑 E2/E3/E4 拿新 baseline，验证"样本扩、指标稳"。继续追加按 ROI 而非凑数——只在发现"当前样本盖不到的新行为信号"时加
 - 红队样本**不走量扩集**：guardrails 是纯正则，pass/fail 对 (user_prompt, 正则) 完全确定——再加 N 条"忽略前面所有指令"的同构变体落的都是同一条 `_ROLE_HIJACK`，不产生新信号。当前 15 条已覆盖 5 大主流族（公开 jailbreak 模板 + 业务面越权/政策篡改），继续新增仅限于"发现当前正则盖不到的新变形"（如 rt-pl-03 之于 `_PROMPT_LEAK`），作为正则回归测试而非统计拦截率
 - W6 剩余项：Docker 一键部署 + README（含架构图 / 评估报告摘要）+ 技术博客
 

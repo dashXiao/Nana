@@ -52,3 +52,32 @@ samples:
     forbidden_tools: []
     forbidden_phrases: []
     notes: "『找真人』同样是显式转人工意图（规则层负样本覆盖点）。"
+
+  - id: anger-05
+    intent: negative_emotion
+    user_id: U002
+    turns:
+      - "你们这破平台！我那只下了快一个月的耳机到底什么时候发货？"
+    expected_tools: [escalate_to_human]
+    expected_phrases: [已转接人工]
+    forbidden_tools: [query_orders, query_policy, query_product, initiate_refund]
+    forbidden_phrases: []
+    notes: |
+      情绪 + 业务诉求混合：用户既辱骂（"破平台"在 12 词正则里）又有真实诉求（O010 久未发货）。
+      架构选择是优先 fast_path 升级人工，不绕去查订单——这是 §9 决定"情绪命中即短路"
+      的关键回归。forbidden_tools 强约束：不得在情绪触发后还去调业务工具"顺手解决"。
+
+  - id: anger-06
+    intent: negative_emotion
+    user_id: U001
+    turns:
+      - "再不给我处理，我就向消协反映了！"
+    expected_tools: [escalate_to_human]
+    expected_phrases: [已转接人工]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: |
+      升级关键词正则覆盖不全的负样本：12 词里只有"投诉"不含"消协/12315/工商局"。
+      期望 LLM 分类器把这种"威胁外部投诉"识别为 negative_emotion 接住。
+      和 anger-02（"糊弄人"无辱骂词）类似，但情绪信号位置不同——一个在隐式抱怨，
+      一个在威胁话术——两条样本一起为 LLM 分类器画出独立信号。

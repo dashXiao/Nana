@@ -64,3 +64,47 @@ samples:
     notes: |
       『那款』代词应被记忆消解到 P002。库存 30 由 query_product 兜底；
       若 LLM 反问『哪款手表』即视为长期记忆召回失败。
+
+  - id: returning-04
+    intent: product_inquiry
+    user_id: U002
+    preconditions:
+      long_term_blocks:
+        - |
+          ## 2026-04-22 14:10
+          用户咨询过 P003 人体工学办公椅的尺寸与承重；当时未下单。
+    turns:
+      - "那把椅子还有货吗？"
+    expected_tools: [query_product]
+    expected_phrases: ["20"]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: |
+      U002 的长期记忆覆盖：之前 3 条全是 U001。
+      "那把椅子"指代消解依赖记忆块里"P003 办公椅"。库存 20 卡 query_product 真值。
+
+  - id: returning-05
+    intent: refund_request
+    user_id: U001
+    preconditions:
+      long_term_blocks:
+        - |
+          ## 2026-04-15 09:00
+          用户询问过 P001 耳机续航。
+        - |
+          ## 2026-04-18 10:23
+          用户对 O003（P003 办公椅）咨询过退货事宜，当时未决定；发货日 2026-04-20 附近。
+        - |
+          ## 2026-04-22 14:10
+          用户简单提到对 P002 手表的兴趣，但未深聊。
+    turns:
+      - "上次问退货那笔我决定退了。"
+    expected_tools: [query_orders, query_policy, initiate_refund]
+    expected_phrases: [O003]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: |
+      多块记忆挑对：3 段长期记忆中只有第 2 段含"退货"语义。
+      agent 应基于"退货"线索定位到 O003（椅子），而不是混到耳机/手表块。
+      考察长期记忆作为冷启动 system 上下文时，LLM 是否能跨段做语义筛选
+      而不是粗暴拼接。

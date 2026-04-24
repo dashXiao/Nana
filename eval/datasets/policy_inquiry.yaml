@@ -51,3 +51,31 @@ samples:
     forbidden_tools: []
     forbidden_phrases: []
     notes: "2.3 节地址修改条款。"
+
+  - id: policy-05
+    intent: policy_question
+    user_id: U002
+    turns:
+      - "发货十多天了的订单还能走退货流程吗？"
+    expected_tools: [query_policy]
+    expected_phrases: [人工]
+    forbidden_tools: [initiate_refund]
+    forbidden_phrases: []
+    notes: |
+      超期咨询：1.1 节明确"超过 7 天不再支持退货，请联系人工客服走特殊处理"。
+      考察 agent 是否会顺手把"建议联系人工"作为闭环答复给出，而不是只复读"不支持"。
+      forbidden_tools 兜底：政策咨询场景下绝不应该真的发起退款。
+
+  - id: policy-06
+    intent: policy_question
+    user_id: U001
+    turns:
+      - "你们办公椅这种大件商品的物流走自营还是第三方？"
+    expected_tools: [query_policy]
+    expected_phrases: [第三方]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: |
+      2.2 节角落条款"大件商品由第三方物流承运，时效以物流方为准"。
+      把这条偏冷门的政策也覆盖进来，确保 query_policy 一次返回整文件后
+      LLM 能精确定位、不漏读。"第三方"是关键词断言。

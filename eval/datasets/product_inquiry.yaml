@@ -64,3 +64,34 @@ samples:
       字符串断言无法区分『声明没有 mAh 数据』vs.『编造 mAh 数字』——
       例如『官方未标注 mAh』是合规答复，但会命中 forbidden "mAh"。
       因此两侧断言都留空，整道题交给 E3 LLM-as-Judge 评 Faithfulness。
+
+  - id: product-05
+    intent: product_inquiry
+    user_id: U001
+    turns:
+      - "你们卖手机壳吗？"
+    expected_tools: []
+    expected_phrases: []
+    forbidden_tools: []
+    forbidden_phrases: ["P004", "P005", "暂时缺货", "已下架"]
+    notes: |
+      不存在商品：catalog 只有 P001/P002/P003。
+      正确路径——agent 看 prompt patch 里的 catalog 片段就能直接答"不卖手机壳"，
+      不必调 query_product。expected_tools 留空但不强 forbid（agent 偶尔会"为保险"
+      一次性查 [P001,P002,P003] 也不算错）。
+      forbidden_phrases 守住核心：不得编造不存在的 product_id 或"暂时缺货/已下架"
+      （这两种话术是典型的"为了贴合用户而编造"）。
+
+  - id: product-06
+    intent: product_inquiry
+    user_id: U002
+    turns:
+      - "X1 耳机和智能手表 Pro 哪个更值得买？"
+    expected_tools: [query_product]
+    expected_phrases: ["299", "899"]
+    forbidden_tools: []
+    forbidden_phrases: []
+    notes: |
+      规格对比：考察 agent 一次拿多商品的能力（query_product 接受 product_ids 列表）
+      并基于真实价格而非凭印象比较。两边价格都要在最终回复中出现。
+      "更值得买"是开放问题，不再卡推荐倾向——交给 E3 Judge 评 helpfulness。

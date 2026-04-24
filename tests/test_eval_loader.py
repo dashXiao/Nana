@@ -33,8 +33,10 @@ def test_all_scenarios_loadable():
         "returning_customer",
         "adversarial",
         "red_team",
+        "chitchat_other",
+        "abnormal_orders",
     }
-    # v1 首批：每剧本 ≥ 3 条
+    # 每剧本 ≥ 3 条
     for scenario, bucket in groups.items():
         assert len(bucket) >= 3, f"{scenario} 样本数 {len(bucket)} < 3"
 
