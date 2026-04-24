@@ -23,6 +23,7 @@ db/*.db-journal
 # IDE
 .idea/
 .vscode/
+.claude/
 
 # macOS
 .DS_Store

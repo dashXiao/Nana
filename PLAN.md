@@ -4,7 +4,7 @@
 > 开工前读 §7（现状）+ §10（待定）；收工前更新 §7 与 §4 checkbox；有新决策追加 §9 一行。
 > 历史变更查 git log，不在本文件流水账。
 
-- **Last updated**: 2026-04-23（E4 消融首轮完成；refund-01 幻觉修复）
+- **Last updated**: 2026-04-23（W6 Gradio Web UI 首版落地）
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -33,7 +33,7 @@
 | 向量存储 | ❌ 不使用 | 经过评估：数据规模 < 15K tokens + 记忆需求任务导向，向量检索过度工程化 |
 | 后端 | Python + FastAPI | |
 | 观测 | ❌ 不做运行期 trace | 评测阶段由 eval harness 现场统计 latency / token / cost |
-| 前端 | 暂无，W6 后补 Gradio | |
+| 前端 | **Gradio 6 Web UI**（`scripts/webui.py`） | 主流 AI 问答页风格；每浏览器 tab 经 `gr.State` 隔离；事件层为纯函数（便于单测） |
 
 ---
 
@@ -224,7 +224,7 @@ nana-agent/
 | **W3** | 两层记忆 | **[x]**（原"qwen-plus 深度优化"口袋项砍掉，相关 prompt 调校已在 §9 #8/#9 零散落地；消融对比并入 W5 E4） |
 | **W4** | 护栏补全（注入过滤 / 情绪感知）| **[x]** |
 | **W5** | 评估体系（评测集 + 自动指标 + Judge + 消融 + 红队） | [ ] |
-| **W6** | Gradio Demo + Docker + README + 技术博客 | [ ] |
+| **W6** | Gradio Demo + Docker + README + 技术博客 | [~] Gradio Demo 已落地；Docker / README / blog 待开 |
 
 ### 已完成（累计）
 
@@ -235,11 +235,12 @@ nana-agent/
 - **M3 两层记忆**：`agent/memory/{events,short_term,long_term}.py`；`run_routed` 入口先压后跑；`RunResult.memory_events` 可观测；REPL 在 `/reset`/`/user`/`/quit`/ 转人工 时 `save_session`
 - **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #10）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
 - **M6 护栏**：`agent/guardrails/injection.py` 规则层预检（三类：角色劫持 / 提示泄露 / 越狱关键词；正序 + 中文倒装），`run_routed` 最前一道闸；命中 `intent="injection"` / `route_path="guardrails"` / 固定拒绝文案、0 LLM
-- **测试 & 人工**:199 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 11 条校验；E2 harness 打分/过滤/聚合 24 条；E3 judge prompt/parse/聚合 24 条；E4 ablation 纯函数/ForcedOtherRouter/对比表 11 条）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
+- **测试 & 人工**:214 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 11 条校验；E2 harness 打分/过滤/聚合 24 条；E3 judge prompt/parse/聚合 24 条；E4 ablation 纯函数/ForcedOtherRouter/对比表 11 条；W6 webui 事件层 respond/new_conv/switch_user 15 条）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
 - **E1 评测集首批**：`eval/datasets/*.yaml` 6 剧本 × 3–5 条共 24 样本；`eval/loader.py` 做 id 唯一 / intent / user_id / 工具名 / turns 非空校验（§5 E1）
 - **E2 自动指标 harness**：`eval/harness.py` CLI 跑通 24 条基线 **88% pass**；双模型 tokens 分桶 + 成本估算；样本间 DB reseed；SampleResult 携带完整 tool_calls（args+result）供 E3 消费
 - **E3 LLM-as-Judge**：`eval/judge.py` 三维度锚点化 rubric；24 条基线均值 faith=4.83 / help=4.71 / tone=4.92；抓到 E2 漏报的 adv-04 归属错误
 - **E4 消融**：`eval/ablation.py` 三配置矩阵（baseline / all-plus / full-context）复用 harness+judge；harness 支持 `force_model` / `force_intent_other` 两把扳手；首轮数据证实分层省 30% 成本不损质、按需加载省 70% 成本兼兜住 intent 分桶
+- **W6 Gradio Demo**（`scripts/webui.py`）：主流 AI 问答页风格（左侧用户切换 + 新对话 / 右侧气泡对话框）；**UI display ≠ agent history** 分两条——`gr.Chatbot` 只接收 user/assistant 气泡，agent 内部 messages（含 system / tool_call / tool）存 `gr.State`；每浏览器 tab 一份状态（无全局变量串台）；切换用户 / 新对话与 REPL 语义一致——把当前 history 写回长期记忆再清空；事件层 `respond` / `new_conversation` / `switch_user` 写成纯函数（15 条 pytest 不起 gradio 服务）
 
 ### 下一步
 
@@ -249,14 +250,14 @@ nana-agent/
   - **intent 漂移**：policy-04 / refund-04 路由 few-shot 迭代
 - 样本扩量到 80–100（与 E2 形成"样本扩、指标稳"的正反馈），扩量后重跑 E4 消融用更稳的 Task Success 叙事
 - E5 红队依次展开；红队数据出来后给 `agent/guardrails/injection.py` 加 LLM 分类兜底层
-- W6 Gradio Demo + Docker + README + blog
+- W6 剩余项：Docker 一键部署 + README（含架构图 / 评估报告摘要）+ 技术博客
 
 ---
 
 ## 8. 交付物
 
 - [ ] GitHub 仓库（含架构图、设计决策、eval 报告、成本分析）
-- [ ] Docker 一键部署 + Gradio Demo
+- [~] Docker 一键部署 + Gradio Demo（Gradio Demo 已可跑 `uv run python scripts/webui.py`；Docker 待补）
 - [ ] 技术博客：重点写「评估体系设计」和「记忆模块架构」
 - [ ] 简历要点：
   - 自研 ReAct Agent 循环（Thought/Action/Observation），工具层遵循 **OpenAI function calling** 规范，跨 LLM 可插拔
