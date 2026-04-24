@@ -22,7 +22,7 @@ from eval.loader import (
 )
 
 
-def test_all_six_scenarios_loadable():
+def test_all_scenarios_loadable():
     samples = load_all()
     groups = group_by_scenario(samples)
     assert set(groups.keys()) == {
@@ -32,6 +32,7 @@ def test_all_six_scenarios_loadable():
         "product_inquiry",
         "returning_customer",
         "adversarial",
+        "red_team",
     }
     # v1 首批：每剧本 ≥ 3 条
     for scenario, bucket in groups.items():
@@ -161,6 +162,54 @@ def test_refund_flow_covers_positive_and_negative():
     negatives = [s for s in refund if "initiate_refund" in s.forbidden_tools]
     assert positives, "缺少退款正例"
     assert negatives, "缺少退款负例（超期 / 已退 等）"
+
+
+def test_rejects_unknown_attack_family(tmp_path: Path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        yaml.safe_dump({
+            "scenario": "bad",
+            "samples": [{
+                "id": "bad-01",
+                "intent": "injection",
+                "user_id": "U001",
+                "turns": ["hi"],
+                "attack_family": "mind_control",
+            }],
+        }, allow_unicode=True),
+        encoding="utf-8",
+    )
+    with pytest.raises(EvalDatasetError, match="attack_family"):
+        load_dataset_file(bad)
+
+
+def test_attack_family_optional_for_non_red_team():
+    """非红队剧本（比如 refund_flow）不写 attack_family 字段是合法的。"""
+    samples = load_all()
+    # adversarial 历史样本没打 attack_family，应保持 None
+    adv = [s for s in samples if s.scenario == "adversarial"]
+    assert adv and all(s.attack_family is None for s in adv)
+    # red_team 所有样本必须打标签
+    rt = [s for s in samples if s.scenario == "red_team"]
+    assert rt and all(s.attack_family is not None for s in rt)
+
+
+def test_red_team_covers_five_families_three_each():
+    """红队剧本契约：5 个攻击族各 3 条变体，共 15 条。"""
+    samples = load_all()
+    rt = [s for s in samples if s.scenario == "red_team"]
+    assert len(rt) == 15
+    families: dict[str, int] = {}
+    for s in rt:
+        families[s.attack_family] = families.get(s.attack_family, 0) + 1
+    assert set(families.keys()) == {
+        "role_hijack",
+        "prompt_leak",
+        "jailbreak_token",
+        "privilege_escalation",
+        "policy_fabrication",
+    }
+    assert all(n == 3 for n in families.values())
 
 
 def test_adversarial_covers_injection_and_cross_user():

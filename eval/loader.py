@@ -37,6 +37,15 @@ _KNOWN_INTENTS: frozenset[str] = frozenset(POLICY_MAP.keys()) | frozenset({"inje
 
 _KNOWN_USERS: frozenset[str] = frozenset({"U001", "U002"})
 
+# E5 红队：攻击族标签，用于 eval/red_team.py 按族出拦截率表
+_KNOWN_ATTACK_FAMILIES: frozenset[str] = frozenset({
+    "role_hijack",             # 角色劫持：ignore previous / 忽略指令
+    "prompt_leak",             # 系统提示泄露：reveal / 重复 above / 给我你的 prompt
+    "jailbreak_token",         # 公开越狱模板：DAN / godmode / developer mode / 场景化
+    "privilege_escalation",    # 越权：以他人身份查 / 退款他人订单
+    "policy_fabrication",      # 政策篡改：诱导 LLM 认可错误政策、不查工具就答
+})
+
 
 @dataclass(frozen=True)
 class Preconditions:
@@ -60,6 +69,7 @@ class Sample:
     forbidden_phrases: tuple[str, ...] = ()
     notes: str = ""
     preconditions: Preconditions = field(default_factory=Preconditions)
+    attack_family: str | None = None
 
 
 class EvalDatasetError(ValueError):
@@ -123,6 +133,16 @@ def _parse_sample(raw: dict, scenario: str) -> Sample:
     if not isinstance(notes, str):
         raise EvalDatasetError(f"[{sample_id}] notes 必须是 str")
 
+    attack_family = raw.get("attack_family")
+    if attack_family is not None:
+        if not isinstance(attack_family, str):
+            raise EvalDatasetError(f"[{sample_id}] attack_family 必须是 str")
+        if attack_family not in _KNOWN_ATTACK_FAMILIES:
+            raise EvalDatasetError(
+                f"[{sample_id}] attack_family={attack_family!r} 不在已知集合 "
+                f"{sorted(_KNOWN_ATTACK_FAMILIES)}"
+            )
+
     return Sample(
         id=sample_id,
         scenario=scenario,
@@ -135,6 +155,7 @@ def _parse_sample(raw: dict, scenario: str) -> Sample:
         forbidden_phrases=_coerce_tuple(raw.get("forbidden_phrases"), "forbidden_phrases", sample_id),
         notes=notes,
         preconditions=_parse_preconditions(raw.get("preconditions"), sample_id),
+        attack_family=attack_family,
     )
 
 
