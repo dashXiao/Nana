@@ -116,6 +116,9 @@ class SampleResult:
     # 错误兜底：异常发生时填，其他字段尽量填可读默认
     error: str | None = None
 
+    # 完整工具调用流水：E3 Judge 判 faithfulness 时作为"agent 可见证据"
+    tool_calls: tuple[dict, ...] = ()
+
     @property
     def passed(self) -> bool:
         """样本级 pass 判定：路由对 + 工具覆盖对 + 禁用工具干净 + 短语两侧干净 + 无异常。"""
@@ -228,6 +231,7 @@ def score_run(
     latency_s: float,
     tokens_by_model: dict[str, TokenUsage],
     turns_count: int,
+    tool_calls: tuple[dict, ...] = (),
     error: str | None = None,
 ) -> SampleResult:
     """把一次 run 的观测聚合成 SampleResult；纯函数，便于单测。"""
@@ -254,6 +258,7 @@ def score_run(
         latency_s=latency_s,
         tokens_by_model={m: TokenUsage(**dataclasses.asdict(u))
                          for m, u in tokens_by_model.items()},
+        tool_calls=tool_calls,
         error=error,
     )
 
@@ -277,6 +282,7 @@ def run_sample(sample: Sample, agent: Agent, memory_dir: Path) -> SampleResult:
     error: str | None = None
     history: list[dict] | None = None
     observed_tools: list[str] = []
+    tool_calls: list[dict] = []
     final_answer = ""
     observed_intent = "other"
 
@@ -291,6 +297,11 @@ def run_sample(sample: Sample, agent: Agent, memory_dir: Path) -> SampleResult:
             for step in result.steps:
                 for inv in step.invocations:
                     observed_tools.append(inv.name)
+                    tool_calls.append({
+                        "name": inv.name,
+                        "arguments": inv.arguments,
+                        "result": inv.result,
+                    })
             if result.final is not None:
                 final_answer = result.final
             history = result.messages
@@ -309,6 +320,7 @@ def run_sample(sample: Sample, agent: Agent, memory_dir: Path) -> SampleResult:
         latency_s=latency_s,
         tokens_by_model=usage_this_sample,
         turns_count=len(sample.turns),
+        tool_calls=tuple(tool_calls),
         error=error,
     )
 

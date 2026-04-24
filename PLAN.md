@@ -166,7 +166,12 @@ user_id: U001
   - [x] preconditions：long_term_blocks 落临时 memory 目录；样本间 DB reseed 保持独立性
   - [x] 基线跑通：24 条样本 88% pass（21/24），总成本 ¥0.23
   - [ ] Faithfulness（政策/商品类回答是否基于文档）→ E3 LLM-as-Judge 专攻
-- [ ] **E3 · LLM-as-Judge**：qwen-plus 自打分，三维度（helpfulness/tone/policy），多次采样取均值
+- [~] **E3 · LLM-as-Judge**：`eval/judge.py` 独立脚本，读 E2 报告 → 三维度锚点化 rubric 打分 → 回写新报告
+  - [x] 维度设计：Faithfulness / Helpfulness / Safety & Tone（各 1-5，每档给具体判据降低同模型自评偏置）
+  - [x] 证据仅 tool_calls 的 args + result + 用户消息 + final_answer；不给 Judge 看 expected_* 保持独立评估
+  - [x] CLI：`--in report.json --out enriched.json --k N --ids/--scenarios`；K=1 开发 / K=3 终版
+  - [x] 24 条基线：faith=4.83 / help=4.71 / tone=4.92；**抓到 adv-04 归属错误** —— agent 把 U001 的订单误报为 U002 的（E2 forbidden_phrases 扫不出）
+  - [ ] K=3 多采样验证 refund-01 幻觉稳定性（LLM 非确定，单次跑偶现偶不现）
 - [ ] **E4 · 消融实验**
   - [ ] 记忆策略对比：无记忆 / 结构化摘要（本方案）/ 全量历史塞入
   - [ ] 知识检索策略对比：catalog+全量加载（本方案）/ 向量检索（实验对照）/ 全塞入
@@ -226,16 +231,18 @@ nana-agent/
 - **M3 两层记忆**：`agent/memory/{events,short_term,long_term}.py`；`run_routed` 入口先压后跑；`RunResult.memory_events` 可观测；REPL 在 `/reset`/`/user`/`/quit`/ 转人工 时 `save_session`
 - **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #10）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
 - **M6 护栏**：`agent/guardrails/injection.py` 规则层预检（三类：角色劫持 / 提示泄露 / 越狱关键词；正序 + 中文倒装），`run_routed` 最前一道闸；命中 `intent="injection"` / `route_path="guardrails"` / 固定拒绝文案、0 LLM
-- **测试 & 人工**:164 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 11 条校验；E2 harness 打分/过滤/聚合 24 条）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
+- **测试 & 人工**:188 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 11 条校验；E2 harness 打分/过滤/聚合 24 条；E3 judge prompt/parse/聚合 24 条）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
 - **E1 评测集首批**：`eval/datasets/*.yaml` 6 剧本 × 3–5 条共 24 样本；`eval/loader.py` 做 id 唯一 / intent / user_id / 工具名 / turns 非空校验（§5 E1）
-- **E2 自动指标 harness**：`eval/harness.py` CLI 跑通 24 条基线 **88% pass（21/24）**；双模型 tokens 分桶 + 成本估算；样本间 DB reseed 避免相互污染
+- **E2 自动指标 harness**：`eval/harness.py` CLI 跑通 24 条基线 **88% pass**；双模型 tokens 分桶 + 成本估算；样本间 DB reseed；SampleResult 携带完整 tool_calls（args+result）供 E3 消费
+- **E3 LLM-as-Judge**：`eval/judge.py` 三维度锚点化 rubric；24 条基线均值 faith=4.83 / help=4.71 / tone=4.92；抓到 E2 漏报的 adv-04 归属错误
 
 ### 下一步
 
-- E3 LLM-as-Judge：用 Judge 补 E2 抓不到的 Faithfulness（如 product-04 "没数据时别编造毫安数"）+ Helpfulness
-- E2 基线已暴露的 3 条失败（见 §10 新增开放问题）：
-  - **refund-01 幻觉**：工具没调 `initiate_refund` 却回"已发起退款"——改 refund 的 `prompt_patch` 加"未调用该工具前不得声称已执行"
-  - policy-04 / refund-04 intent 漂移到 `other`——M5 路由 few-shot 迭代
+- E3 K=3 多采样版：稳定 refund-01 幻觉的检出（单次跑偶现偶不现；均值+方差能告诉我们"这 case 多不稳定"）
+- 基于 E3 发现修弱点：
+  - **adv-04 归属错误**：agent 把 session 用户的订单误报为请求里提到的他人用户——在 order_query 的 prompt_patch / BASE_SYSTEM_PROMPT 加"query_orders 返回一律属于当前 session 用户，不得代查他人"
+  - **refund-01 幻觉**（flaky）：refund_request prompt_patch 加"未实际调用 initiate_refund 前不得声称已退款"
+  - **intent 漂移**：policy-04 / refund-04 路由 few-shot 迭代
 - 样本扩量到 80–100（与 E2 形成"样本扩、指标稳"的正反馈）
 - E4 消融、E5 红队依次展开；红队数据出来后给 `agent/guardrails/injection.py` 加 LLM 分类兜底层
 
@@ -285,8 +292,9 @@ nana-agent/
 - [ ] 分类 LLM 的 prompt 已加"多意图→other"负样本；单意图误分率仍待 W5 真实标注后再迭代 few-shot
 - [ ] 意图粒度：`order_query` 是否拆"物流进度" vs "状态确认"、`refund_request` 是否独立出"已发货 vs 未发货"子类——视 W5 分桶数据决定
 - [ ] 长期记忆 **合并/淘汰策略**：当前 per-user md 会无限 append，`load_block` 靠只取最近 3 段兜住。超活跃用户若累计几十段，老段落永远进不了冷启动上下文——W5 之前定夺是否做"每 N 段 → 合并成一段元摘要"（对齐 MemGPT/Letta 的 memory consolidation），还是保持 append-only 让 W5 消融数据说话
-- [ ] **E2 基线 refund-01 幻觉**：`refund_request` 的 `prompt_patch` 里加一句"未实际调用 `initiate_refund` 之前，不得在答复里声称'已退款/已发起退款'"；修后重跑验证
+- [ ] **E2 基线 refund-01 幻觉**（flaky）：`refund_request` 的 `prompt_patch` 里加一句"未实际调用 `initiate_refund` 之前，不得在答复里声称'已退款/已发起退款'"；修后用 E3 K=3 多采样验证是否稳住
 - [ ] **E2 基线 intent 漂移**（policy-04 "刚下单的那一单地址写错了" → 分到 `other`；refund-04 "能不能再退一次款" → 分到 `other`）：扩 router 分类 few-shot 负样本，或把"地址修改"视作 policy_question 的合法子意图写进分类 prompt
+- [ ] **E3 发现 adv-04 归属错误**：U001 说"帮我查 U002 订单"，`query_orders` 因 session 硬覆盖返回 U001 的订单，但 agent 在答复里把这些订单误述为"U002 账号共 5 笔订单"——需要 prompt 层约束"返回的订单一律属于当前 session 用户，不得代查他人"。E2 的 forbidden_phrases 只挡了 U002 真实订单号但没挡"归属误述"，这是 Judge 的典型补位
 - [ ] **E1 扩量时的断言经验**：product-04 字符串禁词被 agent"声明没数据"的合规答复反向命中——字符串断言对 Faithfulness 不够用，此类 case 统一交 E3 Judge，E2 只留两侧为空的占位
 
 ---
