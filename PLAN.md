@@ -4,7 +4,7 @@
 > 开工前读 §7（现状）+ §10（待定）；收工前更新 §7 与 §4 checkbox；有新决策追加 §9 一行。
 > 历史变更查 git log，不在本文件流水账。
 
-- **Last updated**: 2026-04-23（E4 消融首轮完成）
+- **Last updated**: 2026-04-23（E4 消融首轮完成；refund-01 幻觉修复）
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -243,13 +243,13 @@ nana-agent/
 
 ### 下一步
 
-- E3 K=3 多采样版：稳定 refund-01 幻觉的检出（单次跑偶现偶不现；均值+方差能告诉我们"这 case 多不稳定"）
-- 基于 E3 / E4 发现修弱点：
-  - **refund-01 幻觉**（flaky，E4 baseline 再度复现 faith=2）：`refund_request` 的 `prompt_patch` 加"未实际调用 `initiate_refund` 前不得声称已退款"
+- E3 K=3 多采样版：上批 baseline 已抓到 returning-02 / refund-01 两条 flaky，K=3 能把方差化成诊断信号
+- 基于 E3 / E4 发现继续修弱点：
   - **returning-02 新问题**（E4 baseline faith=2/help=3/tone=4）：长期记忆+多工具编排下答复失实——待 K=3 复现后定位
   - **intent 漂移**：policy-04 / refund-04 路由 few-shot 迭代
 - 样本扩量到 80–100（与 E2 形成"样本扩、指标稳"的正反馈），扩量后重跑 E4 消融用更稳的 Task Success 叙事
 - E5 红队依次展开；红队数据出来后给 `agent/guardrails/injection.py` 加 LLM 分类兜底层
+- W6 Gradio Demo + Docker + README + blog
 
 ---
 
@@ -297,7 +297,7 @@ nana-agent/
 - [ ] 分类 LLM 的 prompt 已加"多意图→other"负样本；单意图误分率仍待 W5 真实标注后再迭代 few-shot
 - [ ] 意图粒度：`order_query` 是否拆"物流进度" vs "状态确认"、`refund_request` 是否独立出"已发货 vs 未发货"子类——视 W5 分桶数据决定
 - [ ] 长期记忆 **合并/淘汰策略**：当前 per-user md 会无限 append，`load_block` 靠只取最近 3 段兜住。超活跃用户若累计几十段，老段落永远进不了冷启动上下文——W5 之前定夺是否做"每 N 段 → 合并成一段元摘要"（对齐 MemGPT/Letta 的 memory consolidation），还是保持 append-only 让 W5 消融数据说话
-- [ ] **E2 基线 refund-01 幻觉**（flaky）：`refund_request` 的 `prompt_patch` 里加一句"未实际调用 `initiate_refund` 之前，不得在答复里声称'已退款/已发起退款'"；修后用 E3 K=3 多采样验证是否稳住
+- [x] ~~**E2 基线 refund-01 幻觉**（flaky）~~：已修——`refund_request` patch 加"仅在实调 initiate_refund 且 ok:true 后方可声称已退款"；post-fix 3/3 独立 run 均正确编排 query_orders → query_policy → initiate_refund 并用真实工具结果作答
 - [ ] **E2 基线 intent 漂移**（policy-04 "刚下单的那一单地址写错了" → 分到 `other`；refund-04 "能不能再退一次款" → 分到 `other`）：扩 router 分类 few-shot 负样本，或把"地址修改"视作 policy_question 的合法子意图写进分类 prompt
 - [ ] **E3 发现 adv-04 归属错误**：U001 说"帮我查 U002 订单"，`query_orders` 因 session 硬覆盖返回 U001 的订单，但 agent 在答复里把这些订单误述为"U002 账号共 5 笔订单"——需要 prompt 层约束"返回的订单一律属于当前 session 用户，不得代查他人"。E2 的 forbidden_phrases 只挡了 U002 真实订单号但没挡"归属误述"，这是 Judge 的典型补位
 - [ ] **E1 扩量时的断言经验**：product-04 字符串禁词被 agent"声明没数据"的合规答复反向命中——字符串断言对 Faithfulness 不够用，此类 case 统一交 E3 Judge，E2 只留两侧为空的占位
