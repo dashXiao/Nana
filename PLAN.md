@@ -4,7 +4,7 @@
 > 开工前读 §7（现状）+ §10（待定）；收工前更新 §7 与 §4 checkbox；有新决策追加 §9 一行。
 > 历史变更查 git log，不在本文件流水账。
 
-- **Last updated**: 2026-04-23（W6 Gradio Web UI 首版落地）
+- **Last updated**: 2026-04-24（W6 Gradio Web UI + 调试轨迹面板落地）
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -215,7 +215,7 @@ nana-agent/
 
 ## 7. 里程碑与当前进展
 
-**当前阶段**：**Agent 功能闭环完成**（M1–M7 全部 [x]，§4），即将进入 **W5 评估体系**。
+**当前阶段**：W5 评估体系 E1–E4 落地（E1 24 条样本 / E2 基线 88% pass / E3 三维度 Judge / E4 三配置消融），E5 红队与 E1 扩量待开；W6 Gradio Demo + 调试轨迹面板已落地，Docker / README / blog 排队。
 
 | 周 | 目标 | 状态 |
 |---|---|---|
@@ -235,12 +235,12 @@ nana-agent/
 - **M3 两层记忆**：`agent/memory/{events,short_term,long_term}.py`；`run_routed` 入口先压后跑；`RunResult.memory_events` 可观测；REPL 在 `/reset`/`/user`/`/quit`/ 转人工 时 `save_session`
 - **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #10）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
 - **M6 护栏**：`agent/guardrails/injection.py` 规则层预检（三类：角色劫持 / 提示泄露 / 越狱关键词；正序 + 中文倒装），`run_routed` 最前一道闸；命中 `intent="injection"` / `route_path="guardrails"` / 固定拒绝文案、0 LLM
-- **测试 & 人工**:214 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 11 条校验；E2 harness 打分/过滤/聚合 24 条；E3 judge prompt/parse/聚合 24 条；E4 ablation 纯函数/ForcedOtherRouter/对比表 11 条；W6 webui 事件层 respond/new_conv/switch_user 15 条）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
+- **测试 & 人工**：226 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 11 条校验；E2 harness 打分/过滤/聚合 24 条；E3 judge prompt/parse/聚合 24 条；E4 ablation 纯函数/ForcedOtherRouter/对比表 11 条；W6 webui 事件层 respond / new_conv / switch_user + trace 格式化 27 条）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
 - **E1 评测集首批**：`eval/datasets/*.yaml` 6 剧本 × 3–5 条共 24 样本；`eval/loader.py` 做 id 唯一 / intent / user_id / 工具名 / turns 非空校验（§5 E1）
 - **E2 自动指标 harness**：`eval/harness.py` CLI 跑通 24 条基线 **88% pass**；双模型 tokens 分桶 + 成本估算；样本间 DB reseed；SampleResult 携带完整 tool_calls（args+result）供 E3 消费
 - **E3 LLM-as-Judge**：`eval/judge.py` 三维度锚点化 rubric；24 条基线均值 faith=4.83 / help=4.71 / tone=4.92；抓到 E2 漏报的 adv-04 归属错误
 - **E4 消融**：`eval/ablation.py` 三配置矩阵（baseline / all-plus / full-context）复用 harness+judge；harness 支持 `force_model` / `force_intent_other` 两把扳手；首轮数据证实分层省 30% 成本不损质、按需加载省 70% 成本兼兜住 intent 分桶
-- **W6 Gradio Demo**（`scripts/webui.py`）：主流 AI 问答页风格（左侧用户切换 + 新对话 / 右侧气泡对话框）；**UI display ≠ agent history** 分两条——`gr.Chatbot` 只接收 user/assistant 气泡，agent 内部 messages（含 system / tool_call / tool）存 `gr.State`；每浏览器 tab 一份状态（无全局变量串台）；切换用户 / 新对话与 REPL 语义一致——把当前 history 写回长期记忆再清空；事件层 `respond` / `new_conversation` / `switch_user` 写成纯函数（15 条 pytest 不起 gradio 服务）
+- **W6 Gradio Demo**（`scripts/webui.py`）：三列布局——侧栏（用户切换 / 新对话 / 显示调试轨迹开关）/ 聊天列（Chatbot + Textbox）/ 右侧调试列（初始隐藏）；**UI display ≠ agent history** 分两条——`gr.Chatbot` 只接收 user/assistant 气泡，agent 内部 messages（含 system / tool_call / tool）存 `gr.State`；每浏览器 tab 一份状态（无全局变量串台）；切换用户 / 新对话与 REPL 语义一致——把当前 history 写回长期记忆再清空；事件层 `respond` / `new_conversation` / `switch_user` 与 trace 格式化 `format_turn_trace` / `format_error_trace` / `render_trace_log` 全拆成纯函数（27 条 pytest 不起 gradio 服务）；调试轨迹与 `scripts/chat.py` 同构（route → exposed_tools → system / fast_path → tool），system prompt 走 code-fence 防 markdown 解析 + CSS 压平为无背景、字号一致；隐藏 Gradio 6 默认 footer（通过 API / 使用 Gradio 构建 / 设置）
 
 ### 下一步
 
@@ -264,7 +264,7 @@ nana-agent/
   - **按领域特点裁剪架构**：经评估主动去除向量 RAG 与语义记忆（详述于设计文档），改用 catalog 索引 + 结构化摘要，消融实验数据支撑
   - 两层记忆架构（短期滚动窗口+压缩 / 长期 per-session md 摘要），跨会话个性化
   - **分层防御**：工具层硬挡"存在性 / 归属 / 状态"三类硬事实（如越权 → `UNAUTHORIZED`），可变的业务政策（如退货时效）交给 LLM 自判 —— policies.md 即单一事实源；两层分工明确，避免政策改一次要改多处
-  - 80+ 样本评测体系（自动指标 + LLM Judge + 红队 + 四路消融）
+  - 80+ 样本评测体系（自动指标 + LLM Judge + 红队 + 三配置消融）
   - 评测报告：Task Success Rate XX%，单 session 成本 $X.XX，P95 延迟 X.Xs
 
 ---
@@ -292,16 +292,19 @@ nana-agent/
 
 ## 10. 开放问题
 
-- [ ] 评测集具体场景细化（W5 之前敲定）
+### 待定
 - [ ] 红队攻击用例库来源（自己设计 vs 参考公开数据集）
 - [ ] 路由 confidence 阈值 0.6 是凭经验拍的，W5 用真实样本标注后再回调
 - [ ] 分类 LLM 的 prompt 已加"多意图→other"负样本；单意图误分率仍待 W5 真实标注后再迭代 few-shot
 - [ ] 意图粒度：`order_query` 是否拆"物流进度" vs "状态确认"、`refund_request` 是否独立出"已发货 vs 未发货"子类——视 W5 分桶数据决定
 - [ ] 长期记忆 **合并/淘汰策略**：当前 per-user md 会无限 append，`load_block` 靠只取最近 3 段兜住。超活跃用户若累计几十段，老段落永远进不了冷启动上下文——W5 之前定夺是否做"每 N 段 → 合并成一段元摘要"（对齐 MemGPT/Letta 的 memory consolidation），还是保持 append-only 让 W5 消融数据说话
-- [x] ~~**E2 基线 refund-01 幻觉**（flaky）~~：已修——`refund_request` patch 加"仅在实调 initiate_refund 且 ok:true 后方可声称已退款"；post-fix 3/3 独立 run 均正确编排 query_orders → query_policy → initiate_refund 并用真实工具结果作答
 - [ ] **E2 基线 intent 漂移**（policy-04 "刚下单的那一单地址写错了" → 分到 `other`；refund-04 "能不能再退一次款" → 分到 `other`）：扩 router 分类 few-shot 负样本，或把"地址修改"视作 policy_question 的合法子意图写进分类 prompt
-- [ ] **E3 发现 adv-04 归属错误**：U001 说"帮我查 U002 订单"，`query_orders` 因 session 硬覆盖返回 U001 的订单，但 agent 在答复里把这些订单误述为"U002 账号共 5 笔订单"——需要 prompt 层约束"返回的订单一律属于当前 session 用户，不得代查他人"。E2 的 forbidden_phrases 只挡了 U002 真实订单号但没挡"归属误述"，这是 Judge 的典型补位
 - [ ] **E1 扩量时的断言经验**：product-04 字符串禁词被 agent"声明没数据"的合规答复反向命中——字符串断言对 Faithfulness 不够用，此类 case 统一交 E3 Judge，E2 只留两侧为空的占位
+
+### 已解决
+- [x] ~~评测集具体场景细化~~：E1 24 条样本 × 6 剧本已敲定；后续扩量到 80–100 走"补覆盖不足"思路，不再是"定场景"问题
+- [x] ~~**E2 基线 refund-01 幻觉**（flaky）~~：已修——`refund_request` patch 加"仅在实调 initiate_refund 且 ok:true 后方可声称已退款"；post-fix 3/3 独立 run 均正确编排 query_orders → query_policy → initiate_refund 并用真实工具结果作答
+- [x] ~~**E3 发现 adv-04 归属错误**~~：已修（commit `2c7e416`）——`order_query` / `other` patch 加"返回的订单一律属于当前 session 用户，不得代查他人"隐私规则；E3 Judge 是这条漏的典型补位
 
 ---
 
