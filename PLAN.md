@@ -4,7 +4,7 @@
 > 开工前读 §7（现状）+ §10（待定）；收工前更新 §7 与 §4 checkbox；有新决策追加 §9 一行。
 > 历史变更查 git log，不在本文件流水账。
 
-- **Last updated**: 2026-04-23
+- **Last updated**: 2026-04-23（E4 消融首轮完成）
 - **Owner**: xyh (lostin0320@gmail.com)
 
 ---
@@ -172,12 +172,16 @@ user_id: U001
   - [x] CLI：`--in report.json --out enriched.json --k N --ids/--scenarios`；K=1 开发 / K=3 终版
   - [x] 24 条基线：faith=4.83 / help=4.71 / tone=4.92；**抓到 adv-04 归属错误** —— agent 把 U001 的订单误报为 U002 的（E2 forbidden_phrases 扫不出）
   - [ ] K=3 多采样验证 refund-01 幻觉稳定性（LLM 非确定，单次跑偶现偶不现）
-- [ ] **E4 · 消融实验**
-  - [ ] 记忆策略对比：无记忆 / 结构化摘要（本方案）/ 全量历史塞入
-  - [ ] 知识检索策略对比：catalog+全量加载（本方案）/ 向量检索（实验对照）/ 全塞入
-  - [ ] 组件消融：去长期记忆 / 去上下文压缩 分别跑
-  - [ ] 双模型分层对比：全 qwen-plus / 分层（本方案）/ 全 qwen-turbo，看 Task Success × Cost × Latency（§9 #11）
-  - [ ] 全部出对比表，用数据支撑架构决策
+- [x] **E4 · 消融实验**（`eval/ablation.py`，复用 harness.run_all + judge.run_batch，三配置矩阵）
+  - [x] 设计收敛到两个"潜在预期"：分层模型 vs all-plus（§9 #11）；按需加载 vs full-context
+  - [x] harness 支持 `force_model` / `force_intent_other` 两把消融扳手（默认不变）
+  - [x] `_ForcedOtherRouter` 子类：跳过分类层始终返回 `intent="other"`，复现"无按需加载"
+  - [x] 三配置 × 24 样本 × E2+E3 跑通，并排对比表落盘 `eval/reports/20260423-225524-ablation.json`
+  - **关键发现**（详见 §9 #11 决策日志）：
+    - 分层 vs all-plus：关掉分层后 plus tokens +34%、成本 +30%（¥0.23→¥0.30），Judge 质量 +0.25（噪声量级）→ 分层省钱不损质
+    - 按需加载 vs full-context：强制 `intent=other` 后 intent 命中率 8%、pass 率 8%（intent 错配是主因），同时 tokens +78%、成本 +70% → 按需加载同时省钱又兜住路由指标
+  - 丢弃：**记忆消融**（长期记忆对跨会话召回是设计充分必要条件，跑实验只会得到 tautology）；
+    **向量检索对照**（成本高且离题，架构决策靠 §9 #2 的数据量论证即够）
 - [ ] **E5 · 红队测试**：Prompt 注入、越权查订单、诱导泄露系统提示、角色劫持，记录拦截率
 
 ---
@@ -231,20 +235,21 @@ nana-agent/
 - **M3 两层记忆**：`agent/memory/{events,short_term,long_term}.py`；`run_routed` 入口先压后跑；`RunResult.memory_events` 可观测；REPL 在 `/reset`/`/user`/`/quit`/ 转人工 时 `save_session`
 - **M7 情绪感知**：`negative_emotion` 独立 intent 并入路由漏斗（§9 #10）；规则 12 词 + LLM 8 标签；与 `escalation` 共用 fast_path
 - **M6 护栏**：`agent/guardrails/injection.py` 规则层预检（三类：角色劫持 / 提示泄露 / 越狱关键词；正序 + 中文倒装），`run_routed` 最前一道闸；命中 `intent="injection"` / `route_path="guardrails"` / 固定拒绝文案、0 LLM
-- **测试 & 人工**:188 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 11 条校验；E2 harness 打分/过滤/聚合 24 条；E3 judge prompt/parse/聚合 24 条）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
+- **测试 & 人工**:199 pytest 全绿（含双模型分层 3 条契约；退款工具层"天数不校验"不变式；E1 loader 11 条校验；E2 harness 打分/过滤/聚合 24 条；E3 judge prompt/parse/聚合 24 条；E4 ablation 纯函数/ForcedOtherRouter/对比表 11 条）；`scripts/smoke_agent.py` S1–S5 共 9 子场景；`scripts/chat.py` REPL 按"路由 / 工具子集 / 记忆事件 / system / 工具调用"顺序打 trace
 - **E1 评测集首批**：`eval/datasets/*.yaml` 6 剧本 × 3–5 条共 24 样本；`eval/loader.py` 做 id 唯一 / intent / user_id / 工具名 / turns 非空校验（§5 E1）
 - **E2 自动指标 harness**：`eval/harness.py` CLI 跑通 24 条基线 **88% pass**；双模型 tokens 分桶 + 成本估算；样本间 DB reseed；SampleResult 携带完整 tool_calls（args+result）供 E3 消费
 - **E3 LLM-as-Judge**：`eval/judge.py` 三维度锚点化 rubric；24 条基线均值 faith=4.83 / help=4.71 / tone=4.92；抓到 E2 漏报的 adv-04 归属错误
+- **E4 消融**：`eval/ablation.py` 三配置矩阵（baseline / all-plus / full-context）复用 harness+judge；harness 支持 `force_model` / `force_intent_other` 两把扳手；首轮数据证实分层省 30% 成本不损质、按需加载省 70% 成本兼兜住 intent 分桶
 
 ### 下一步
 
 - E3 K=3 多采样版：稳定 refund-01 幻觉的检出（单次跑偶现偶不现；均值+方差能告诉我们"这 case 多不稳定"）
-- 基于 E3 发现修弱点：
-  - **adv-04 归属错误**：agent 把 session 用户的订单误报为请求里提到的他人用户——在 order_query 的 prompt_patch / BASE_SYSTEM_PROMPT 加"query_orders 返回一律属于当前 session 用户，不得代查他人"
-  - **refund-01 幻觉**（flaky）：refund_request prompt_patch 加"未实际调用 initiate_refund 前不得声称已退款"
+- 基于 E3 / E4 发现修弱点：
+  - **refund-01 幻觉**（flaky，E4 baseline 再度复现 faith=2）：`refund_request` 的 `prompt_patch` 加"未实际调用 `initiate_refund` 前不得声称已退款"
+  - **returning-02 新问题**（E4 baseline faith=2/help=3/tone=4）：长期记忆+多工具编排下答复失实——待 K=3 复现后定位
   - **intent 漂移**：policy-04 / refund-04 路由 few-shot 迭代
-- 样本扩量到 80–100（与 E2 形成"样本扩、指标稳"的正反馈）
-- E4 消融、E5 红队依次展开；红队数据出来后给 `agent/guardrails/injection.py` 加 LLM 分类兜底层
+- 样本扩量到 80–100（与 E2 形成"样本扩、指标稳"的正反馈），扩量后重跑 E4 消融用更稳的 Task Success 叙事
+- E5 红队依次展开；红队数据出来后给 `agent/guardrails/injection.py` 加 LLM 分类兜底层
 
 ---
 
@@ -279,7 +284,7 @@ nana-agent/
 | 8 | Slim base + 规则/资料按意图下沉到 `prompt_patch` | base 仅身份+格式；catalog 与行为规则按意图挂 patch，每轮 tokens 更短；"routing 不只裁工具，还裁行为"成为路由叙事 |
 | 9 | 两层记忆：短期 Summary-Buffer（会话内压缩）+ 长期 per-user append-only md（冷启动 load 最近 3 段） | 短期解决会话膨胀，长期解决老客跨会话召回；`_lt_cache` 按轮重注入新 system，抵消 patch 替换 `messages[0]` |
 | 10 | 情绪感知并入 router 作独立 intent `negative_emotion`（与 `escalation` 共用 fast_path）；Prompt 注入独立 `guardrails` 层 | 情绪是"意图的延伸"、注入是"威胁行为，不是意图"——guardrails/router/ReAct 三层各司其职；注入纯正则够用，LLM 兜底延后到 W5 红队数据出来再加 |
-| 11 | 双模型分层：主 qwen-plus（ReAct 主循环）+ 轻量 qwen-turbo（路由分类 / 短期压缩 / 长期摘要）；`chat(model=...)` 参数注入 | 把"便宜之前跑贵的"思路从规则→LLM 再延伸到模型级：三处轻量任务无 tool use、输入短、输出短，plus 属于杀鸡用牛刀；成本随量下降，函数调用与最终答复质量不妥协。W5 E4 可加一组"全 plus / 分层 / 全 turbo"对比把代价讲清楚 |
+| 11 | 双模型分层：主 qwen-plus（ReAct 主循环）+ 轻量 qwen-turbo（路由分类 / 短期压缩 / 长期摘要）；`chat(model=...)` 参数注入 | 把"便宜之前跑贵的"思路从规则→LLM 再延伸到模型级：三处轻量任务无 tool use、输入短、输出短，plus 属于杀鸡用牛刀；成本随量下降，函数调用与最终答复质量不妥协。**E4 实证**（`20260423-225524-ablation.json`）：baseline vs all-plus → plus tokens +34%（51K→69K）、成本 +30%（¥0.23→¥0.30）、Judge 三维度上升 +0.25 在噪声内；baseline vs full-context（强制 intent=other）→ tokens +78%、成本 +70%、intent 命中率 83%→8% 崩塌，同时证实"按需加载 patch"既省 token 又锁住路由分桶指标 |
 | 12 | 退款流程不再反问"是否确认"；退货时效政策也不在工具层校验，完全由 LLM 调 `query_policy` 结合订单的 `days_since_shipped` 自判。policies.md 是政策条款的**单一事实源**（工具 description / prompt_patch 均不复述具体天数） | 反问一轮徒增"用户回复'确定'被分类成 other"的意图漂移风险；天数属于"可能被运营调整的业务政策"（不是越权那种硬事实），工具层硬拦会出现"政策改一次要改多处"+ 工具层硬拦一旦误拦又无对话层兜底。工具层只守"存在性 / 归属 / 状态"三类硬事实，政策交 prompt 层；同时规避了意图粘性，P2 延后到 W5 真实数据再看 |
 
 ---

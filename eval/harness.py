@@ -36,7 +36,7 @@ from agent.guardrails.injection import InjectionDetector
 from agent.llm import LIGHT_MODEL, MODEL
 from agent.memory.long_term import LongTermMemory
 from agent.memory.short_term import ShortTermMemory
-from agent.router import BASE_SYSTEM_PROMPT, IntentRouter
+from agent.router import BASE_SYSTEM_PROMPT, IntentDecision, IntentRouter
 from agent.tools._contract import ToolRegistry
 from agent.tools.escalate_to_human import ESCALATE_TO_HUMAN_SPEC
 from agent.tools.initiate_refund import INITIATE_REFUND_SPEC
@@ -135,16 +135,25 @@ class SampleResult:
 # ---------- Agent / chat 装配 ----------
 
 
-def _make_capturing_chat(usage_by_model: dict[str, TokenUsage]):
-    """包装 agent.llm.chat：保持行为不变，只把 response.usage 按 model 累加到字典。"""
+def _make_capturing_chat(
+    usage_by_model: dict[str, TokenUsage],
+    force_model: str | None = None,
+):
+    """包装 agent.llm.chat：保持行为不变，只把 response.usage 按 model 累加到字典。
+
+    `force_model` 不为 None 时，覆盖所有下游调用方传入的 model——E4 消融里用来把
+    "分类/压缩/摘要"这些本来走 LIGHT_MODEL 的调用强制拉到 qwen-plus，复现"全 plus"配置。
+    """
     from agent.llm import chat as real_chat  # 延迟 import，避免环境变量未就绪报错
 
     def wrapped(messages, tools=None, model=None, **kwargs):
-        resolved_model = model or MODEL
-        response = real_chat(messages, tools=tools, model=model, **kwargs)
+        effective_model = force_model or model or MODEL
+        response = real_chat(
+            messages, tools=tools, model=effective_model, **kwargs,
+        )
         usage = getattr(response, "usage", None)
         if usage is not None:
-            bucket = usage_by_model.setdefault(resolved_model, TokenUsage())
+            bucket = usage_by_model.setdefault(effective_model, TokenUsage())
             bucket.add(
                 prompt=getattr(usage, "prompt_tokens", 0) or 0,
                 completion=getattr(usage, "completion_tokens", 0) or 0,
@@ -155,12 +164,31 @@ def _make_capturing_chat(usage_by_model: dict[str, TokenUsage]):
     return wrapped
 
 
+class _ForcedOtherRouter(IntentRouter):
+    """E4 消融专用：跳过分类层，始终返回 intent="other"。
+
+    用于"按需加载消融"——让 agent 每轮都看 `other` patch 的全量通用规则 + 全 5 工具，
+    消掉路由的意图裁剪收益，对比 baseline 体现"路由按需收窄"的 token / 成本差。
+    `route_path="forced"` 便于报表一眼看到"这是消融配置"。
+    """
+
+    def classify(self, msg: str) -> IntentDecision:  # noqa: ARG002 — msg 故意不看
+        return IntentDecision("other", 1.0, "forced")
+
+
 def build_agent(
     memory_dir: Path,
     usage_by_model: dict[str, TokenUsage],
+    force_model: str | None = None,
+    force_intent_other: bool = False,
 ) -> Agent:
-    """装配评测用 Agent：5 工具 + 路由 + 双记忆 + 注入闸 + 捕获用量的 chat。"""
-    chat_fn = _make_capturing_chat(usage_by_model)
+    """装配评测用 Agent：5 工具 + 路由 + 双记忆 + 注入闸 + 捕获用量的 chat。
+
+    - `force_model`：所有 chat 调用一律走这个 model（E4 "全 plus" 消融）。
+    - `force_intent_other`：用 `_ForcedOtherRouter` 代替真路由（E4 "无按需加载" 消融）。
+    默认参数下行为与 baseline 完全一致。
+    """
+    chat_fn = _make_capturing_chat(usage_by_model, force_model=force_model)
     registry = ToolRegistry([
         QUERY_ORDERS_SPEC,
         QUERY_POLICY_SPEC,
@@ -168,11 +196,12 @@ def build_agent(
         INITIATE_REFUND_SPEC,
         ESCALATE_TO_HUMAN_SPEC,
     ])
+    router_cls = _ForcedOtherRouter if force_intent_other else IntentRouter
     return Agent(
         registry=registry,
         system_prompt=BASE_SYSTEM_PROMPT,
         chat_fn=chat_fn,
-        router=IntentRouter(chat_fn=chat_fn),
+        router=router_cls(chat_fn=chat_fn),
         short_term=ShortTermMemory(chat_fn=chat_fn),
         long_term=LongTermMemory(base_dir=memory_dir, chat_fn=chat_fn),
         injection_detector=InjectionDetector(),
@@ -325,13 +354,25 @@ def run_sample(sample: Sample, agent: Agent, memory_dir: Path) -> SampleResult:
     )
 
 
-def run_all(samples: list[Sample]) -> list[SampleResult]:
-    """串行跑全部样本。每样本独立 diff 出本轮的 tokens 用量。"""
+def run_all(
+    samples: list[Sample],
+    build_kwargs: dict[str, Any] | None = None,
+) -> list[SampleResult]:
+    """串行跑全部样本。每样本独立 diff 出本轮的 tokens 用量。
+
+    `build_kwargs` 透传给 `build_agent`，用来跑 E4 消融配置（force_model / force_intent_other）。
+    默认 None → baseline 行为不变。
+    """
     results: list[SampleResult] = []
+    build_kwargs = build_kwargs or {}
     with tempfile.TemporaryDirectory(prefix="nana-eval-") as tmp:
         memory_dir = Path(tmp)
         usage_by_model: dict[str, TokenUsage] = {}
-        agent = build_agent(memory_dir=memory_dir, usage_by_model=usage_by_model)
+        agent = build_agent(
+            memory_dir=memory_dir,
+            usage_by_model=usage_by_model,
+            **build_kwargs,
+        )
 
         for sample in samples:
             # 每条样本前重置 DB 到种子态；否则 refund-02 退掉 O003 后，
