@@ -1,17 +1,4 @@
-"""ReAct 循环 · 最小骨架。
-
-职责：
-- 维护 OpenAI chat messages 历史
-- 每轮：调 LLM → 若返回 tool_calls 则派发 → 把结果回灌为 tool message → 再调 LLM
-  直到模型给出自然语言答复，或达到 `max_steps` 熔断
-- 在派发前，把 session 上下文（当前 `user_id`）硬写回 tool_call arguments，
-  这样即便 LLM 伪造成别的 user_id，也会被覆盖——工具层鉴权的上游哨卡
-- `run()` 接受 exposed_tools / prompt_patch 做工具子集暴露 + 系统提示增强
-- `run_routed()` 编排「分类 → 策略 → fast_path 或 ReAct」整条链路
-
-Guardrails：`run_routed` 最前一道闸，规则命中注入则短路返回固定拒绝文案，
-不经过 router / LLM / 工具；详见 `agent/guardrails/`、PLAN §9 #22。
-"""
+"""ReAct 循环 · 最小骨架。"""
 
 from __future__ import annotations
 
@@ -54,18 +41,14 @@ class Step:
 
 @dataclass
 class RunResult:
-    """一次 run() 的终态。"""
+    """一次 run() 的终态；final=None 表示达到 max_steps 仍未收敛。"""
 
-    final: str | None           # 模型最终自然语言答复；None 表示达到 max_steps 仍未收敛
-    messages: list[dict]        # 完整 message 历史，可作为 history 追加轮次
-    steps: list[Step]           # 按轮记录，便于 trace / 评测
-    # 路由元数据：未经 run_routed 的调用保持默认值（"other" + "default" + 0.0），
-    # 让直接用 run() 的老测试 / 评测 harness 也能安全读取这三个字段。
+    final: str | None
+    messages: list[dict]
+    steps: list[Step]
     intent: str = "other"
-    route_path: str = "default"  # "rules" | "llm" | "default"
+    route_path: str = "default"
     confidence: float = 0.0
-    # 本轮记忆层动作的可观测轨迹（load_long_term / compress / save_long_term）。
-    # 与 intent/route_path 同构：数据回传、非副作用回调，REPL 和评测都能按需消费。
     memory_events: list[MemoryEvent] = field(default_factory=list)
 
 
@@ -87,16 +70,12 @@ class Agent:
         self.system_prompt = system_prompt
         self.max_steps = max_steps
         self._chat = chat_fn or default_chat
-        # router 懒加载——只有 run_routed 用到；直接 run() 的链路完全不碰它
         self._router = router
-        # 记忆层可选：None 时 run_routed 跳过。谱系见 PLAN §9 #19。
         self._short_term = short_term
         self._long_term = long_term
-        # guardrails 默认开启——注入检测是 run_routed 每条消息都过的闸；
-        # 测试可注入替身关掉或伪造命中。
         self._injection_detector = injection_detector or InjectionDetector()
-        # 长期块会话内缓存，供每轮重注入——否则 patch 非空时 `_build_initial_messages`
-        # 替换 messages[0] 会吞掉首轮嵌入的块（PLAN §9 #20）。
+        # 长期块会话内缓存：每轮重注入；否则 patch 非空时 _build_initial_messages
+        # 替换 messages[0] 会吞掉首轮嵌入的块。
         self._lt_cache: dict[str, str] = {}
 
     def run(
@@ -110,16 +89,9 @@ class Agent:
     ) -> RunResult:
         """执行一次 ReAct 循环。
 
-        - `exposed_tools=None` → 暴露全部工具（默认，等同未路由）
-        - `exposed_tools=()`   → 零工具（chitchat 场景，强制 LLM 只做自然语言回复）
-        - `exposed_tools=("query_orders",)` → 严格子集
-
-        - `prompt_patch` 非空时，会**覆盖**消息序列的 system 条目为
-          `self.system_prompt + "\\n\\n" + prompt_patch`。这对多轮路由很关键：
-          不同轮可能命中不同意图，patch 必须随轮更新。
-          为空时保持旧行为（沿用 history 里的 system），不破坏既有测试。
-
-        - `memory_block` 非空时，作为第三段追加到 system（冷启动用户的长期记忆）。
+        - exposed_tools: None → 全工具；() → 零工具（chitchat）；具名子集 → 严格暴露
+        - prompt_patch: 非空则覆盖 system 条目（多轮路由各轮意图可能不同）
+        - memory_block: 非空则作为第三段追加到 system（冷启动长期记忆）
         """
         messages = self._build_initial_messages(
             history, user_message, prompt_patch, memory_block
@@ -161,8 +133,7 @@ class Agent:
                     }
                 )
 
-            # 终止型工具：escalate_to_human 一旦被调，硬切对话，不再让 LLM 继续
-            # （当前只有一个终止型工具，按 name 匹配即可；将来多起来再抽 terminates 字段）
+            # 终止型工具：escalate_to_human 命中即硬切，不再让 LLM 继续
             if any(inv.name == "escalate_to_human" for inv in step.invocations):
                 return RunResult(
                     final="已转接人工", messages=messages, steps=steps
@@ -176,24 +147,18 @@ class Agent:
         user_id: str | None = None,
         history: list[dict] | None = None,
     ) -> RunResult:
-        """guardrails → 记忆层 → 分类 → 策略 → fast_path 或带工具子集的 ReAct。
+        """guardrails → 记忆层 → 路由 → fast_path 或带工具子集的 ReAct。
 
-        0. guardrails：注入规则层命中 → 固定拒绝短路返回，不进 router / LLM / 工具
-        1. 长期：若 history 为空且配了 long_term，按 user_id 读最近 3 段摘要，
-           作为独立 system 块拼进新 history（仅冷启动该会话时触发）
-        2. 短期：若配了 short_term，对 history 做 Summary-Buffer 压缩
-        3. 分类 + fast_path / 正常 ReAct
-
-        记忆事件与路由元数据同步回填进 RunResult，便于 REPL 与评测消费。
+        guardrails 命中即固定拒绝短路；fast_path 直派零参终止工具（当前仅 escalate）。
+        路由元数据与记忆事件回填进 RunResult。
         """
-        from agent.router import POLICY_MAP, IntentRouter  # 循环依赖防范
+        from agent.router import POLICY_MAP, IntentRouter
 
         if self._router is None:
             self._router = IntentRouter()
 
         memory_events: list[MemoryEvent] = []
 
-        # 层 0：guardrails 预检——注入命中即短路，不做分类 / 不进 ReAct / 不占人工
         matched = self._injection_detector.detect(user_message)
         if matched is not None:
             memory_events.append(MemoryEvent("guardrail_injection", matched))
@@ -276,15 +241,9 @@ class Agent:
         prompt_patch: str,
         memory_block: str = "",
     ) -> list[dict]:
-        """构造本轮对话 messages 序列。
+        """构造本轮 messages：base + patch + memory_block 合成 system，再续 history + user。
 
-        system 内容合成顺序：`base + "\\n\\n" + patch + "\\n\\n" + memory_block`
-        （空段自动略过）。长期记忆块以 system 后缀形式注入，不依赖 history[0]——
-        这样在 patch 非空时"替换 messages[0]"的行为也不会把记忆覆盖掉。
-
-        - 无 history：新建 system（含 patch + memory_block）+ user
-        - 有 history + 无 patch + 无 memory_block：沿用 history 原 system（兼容旧测试）
-        - 有 history + 有 patch/memory_block：**替换** messages[0] 为新 system
+        memory_block 作为 system 后缀，避免 patch 非空替换 messages[0] 时把长期记忆覆盖掉。
         """
         system_content = self.system_prompt
         if prompt_patch:
@@ -311,8 +270,8 @@ class Agent:
     ) -> list[dict]:
         """根据 exposed_tools 返回要发给 LLM 的 schema 列表。
 
-        注意 `agent.llm.chat` 里 `if tools:` 会把空 list 判定为 falsy → 不传 tools 字段，
-        恰好实现 chitchat 意图"LLM 看不到任何工具 → 只能自然语言回复"的效果。
+        agent.llm.chat 里 `if tools:` 会把空 list 判定为 falsy → 不传 tools 字段，
+        恰好实现 chitchat "LLM 看不到任何工具" 的效果。
         """
         if exposed_tools is None:
             return self.registry.openai_tools()
@@ -332,10 +291,8 @@ class Agent:
         policy: Any,
         memory_block: str = "",
     ) -> RunResult:
-        """绕过 LLM 直接派发零参数终止工具（当前只有 escalate_to_human）。
-
-        仍构造一条完整的 assistant tool_call + tool result message 序列，
-        让 messages 形态与正常 ReAct 一致——下游 history / 评测 harness 不需要特判。
+        """绕过 LLM 直接派发零参数终止工具，但仍构造完整的 tool_call/tool 消息对，
+        让 messages 形态与正常 ReAct 一致——下游 history/评测不需要特判。
         """
         messages = self._build_initial_messages(
             history, user_message, "", memory_block

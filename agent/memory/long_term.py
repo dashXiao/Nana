@@ -1,9 +1,4 @@
-"""长期记忆 · 用户级 append-only markdown。
-
-谱系：ChatGPT Memory / MemGPT / Letta core memory（跨会话用户级状态）。
-路径 `memory/sessions/{user_id}.md`，每段 `## YYYY-MM-DD HH:MM` 一次会话摘要。
-冷启动只取最近 `recent_sections` 段，避免历史越堆越重。
-"""
+"""长期记忆 · 用户级 append-only markdown：每段 `## YYYY-MM-DD HH:MM` 一次会话摘要。"""
 
 from __future__ import annotations
 
@@ -109,7 +104,6 @@ class LongTermMemory:
         dialogue = [m for m in messages if m.get("role") != "system"]
         if not dialogue:
             return ""
-        # 摘要任务：无 tool + 短输出，走 LIGHT_MODEL（PLAN §9 #11）
         try:
             resp = self._chat(
                 messages=[

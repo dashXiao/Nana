@@ -1,19 +1,10 @@
-"""E2 自动指标 harness：跑 E1 评测集 → 采集确定性指标 → 聚合报表。
+"""E2 自动指标 harness：跑评测集 → 采集确定性指标（intent/tool/phrase/latency/tokens）→ 报表。
 
-设计要点：
-- **只测确定性指标**：intent accuracy / tool call accuracy / phrase match / latency / tokens。
-  Faithfulness / Helpfulness 等主观维度留给 E3 LLM-as-Judge。
-- **成本保护**：默认 --dry-run 只列要跑的样本；--run 才真的打主模型。
-- **双模型 tokens 分桶**：包装 `agent.llm.chat` 抓 `response.usage`，按实际 model 累计，
-  这是 §9 #11 "双模型分层省多少钱" 叙事的硬证据来源。
-- **preconditions**：long_term_blocks 落到临时目录的 md 文件，跑完整体清理，
-  不污染真实 memory/sessions/。
-
-CLI：
-    uv run python -m eval.harness                 # dry-run，仅列样本
-    uv run python -m eval.harness --run           # 真跑全部 24 条
+CLI:
+    uv run python -m eval.harness                 # dry-run
+    uv run python -m eval.harness --run           # 全量
     uv run python -m eval.harness --run --scenarios refund_flow
-    uv run python -m eval.harness --run --ids refund-01 refund-02 --out /tmp/r.json
+    uv run python -m eval.harness --run --ids refund-01 --out /tmp/r.json
 """
 
 from __future__ import annotations
@@ -55,9 +46,7 @@ def _reseed_db_silently() -> None:
     with contextlib.redirect_stdout(io.StringIO()):
         _seed_db()
 
-# 计价（¥ / 百万 tokens，input / output）；读取 .env 的 LLM_MODEL_PRICING / LLM_LIGHT_MODEL_PRICING，
-# 按当前 .env 选定的 MODEL / LIGHT_MODEL 字符串建表。换模型时只改 .env，不动代码。
-# 数据为 portfolio 叙事级精度，真实 billing 以供应商为准。
+# 计价 (¥/M tokens, input/output)：从 .env 读，换模型只改 .env
 def _parse_pricing(env_var: str) -> tuple[float, float]:
     raw = os.getenv(env_var, "")
     parts = raw.split(",")

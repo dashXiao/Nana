@@ -1,9 +1,4 @@
-"""短期记忆 · Summary-Buffer 压缩。
-
-谱系：LangChain `ConversationSummaryBufferMemory` / Claude Code auto-compact。
-按用户轮数触发：超过 `max_rounds` 时，把早期对话交给 LLM 摘成一段 system，
-保留末 `keep_recent` 轮原始细节。纯函数——不改 self、不持久化。
-"""
+"""短期记忆 · Summary-Buffer 压缩：超 max_rounds 把早期对话摘成 system，保留末 keep_recent 轮。"""
 
 from __future__ import annotations
 
@@ -59,7 +54,6 @@ class ShortTermMemory:
         ] + tail
 
     def _summarize(self, dialogue: list[dict]) -> str:
-        # 摘要任务：无 tool + 短输出，走 LIGHT_MODEL（PLAN §9 #11）
         try:
             resp = self._chat(
                 messages=[
@@ -70,5 +64,5 @@ class ShortTermMemory:
                 model=LIGHT_MODEL,
             )
             return (resp.choices[0].message.content or "").strip() or "（LLM 返回空摘要）"
-        except Exception as exc:  # noqa: BLE001 — LLM 不稳定时不应炸掉对话
+        except Exception as exc:  # noqa: BLE001
             return f"（摘要失败：{type(exc).__name__}）"

@@ -1,11 +1,4 @@
-"""query_product · 按 product_ids 批量返回商品（DB 字段 + md 完整描述）。
-
-设计要点（PLAN §4 / §9 决策）：
-- **多 ID 入参**：天然支持"A 和 B 哪个更合适"这种对比场景，一次调用解决
-- **不走向量 RAG**：catalog 注入到 system prompt 里（商品规模 3），LLM 从 catalog 挑 ID → 调本工具全量加载 → 信息完整 + trace 清晰
-- **DB + md 融合**：交易数据（price/stock）和描述（md 里）在一次返回里合并，LLM 不用自己对齐
-- 部分 ID 不存在时，返回已找到的 + `missing` 列表，LLM 可以明确告知用户哪些查不到
-"""
+"""query_product · 按 product_ids 批量返回商品（DB 字段 + md 完整描述 + missing 列表）。"""
 
 from __future__ import annotations
 

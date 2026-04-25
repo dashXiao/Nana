@@ -1,20 +1,4 @@
-"""意图路由 · 分层漏斗（规则 → LLM 分类 → 默认兜底）。
-
-职责：
-- 把用户 msg 打一个 intent 标签，供 `Agent.run_routed` 决定：
-  - 给 LLM 暴露哪个工具子集（exposed_tools）
-  - 在 system prompt 末尾追加什么强约束（prompt_patch）
-  - 是否走 fast_path 直接派发零参数终止工具（escalation）
-- 不参与工具派发本身；只做"给句子打标签"
-
-三层逻辑：
-1. 规则层：整串匹配极短高置信短语——0 次 LLM 调用
-2. LLM 分类：规则未命中时，单独一次轻量模型调用，结构化 JSON 输出
-3. 默认兜底：分类失败 / 格式错 / 低置信度 → intent="other" + 全工具暴露
-
-简历角度：这是"cheap-before-expensive"的分层 classifier，与 ReAct 循环解耦；
-评测时 RunResult 带 intent/route_path/confidence 三个字段可供分桶统计。
-"""
+"""意图路由 · 分层漏斗：规则 → LLM 分类（LIGHT_MODEL）→ 默认兜底（other）。"""
 
 from __future__ import annotations
 
@@ -27,16 +11,12 @@ from agent.llm import LIGHT_MODEL, chat as default_chat
 
 ChatFn = Callable[..., Any]
 
-# 规则要求"整串匹配"，避免把"你好我想查 O001"误归为 chitchat。
-# 允许句末带一个标点（让"转人工！"/"你好~"也命中）。
+# 整串匹配 + 句末单标点：避免把"你好我想查 O001"误归 chitchat
 _ESCALATION_RE = re.compile(
     r"^(转人工|找真人|转客服|人工)[!?.。！？~～]?$",
     re.IGNORECASE,
 )
-# negative_emotion 用 search（内容匹配）而非整串匹配：情绪词经常混在正常诉求里，
-# 例如"你们这破耳机垃圾，赶紧退！"既不是纯情绪宣泄、也不是标准退款诉求，但强
-# 负面情绪足以直接升级人工。和 escalation（用户主动要求转人工）拆成两个 intent，
-# 共用 fast_path 工具但 RunResult.intent 分桶可直接用于 W5 评测。
+# 情绪词常混在正常诉求中，用 search 而非 match
 _NEGATIVE_EMOTION_RE = re.compile(
     r"(垃圾|骗子|气死|无耻|投诉|起诉|举报|差评|坑人|欺诈|滚|废物)",
     re.IGNORECASE,
@@ -50,8 +30,6 @@ BASE_SYSTEM_PROMPT = """\
 你是 NanaShop 的电商客服助手。回复使用简洁中文。
 """
 
-# 商品 catalog：product_inquiry 与 other（跨维度含商品）都要把"耳机/手表/椅子"
-# 之类的口语映射到 product_id；抽成常量避免两处不同步。
 _CATALOG_SNIPPET = (
     "全站在售商品（固定 3 款，用户用名称或俗称提问时对照下表映射到对应 product_id）：\n"
     "- P001：无线蓝牙耳机 X1\n"
@@ -76,7 +54,7 @@ VALID_INTENTS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class IntentDecision:
-    """一次分类的完整结果，也是 W5 评测按意图分桶的抓手。"""
+    """一次分类的完整结果。"""
 
     intent: str
     confidence: float
@@ -85,15 +63,9 @@ class IntentDecision:
 
 @dataclass(frozen=True)
 class IntentPolicy:
-    """intent → 执行策略的静态映射。
+    """intent → 执行策略：exposed_tools (None=全 / ()=空 / 子集) + prompt_patch + fast_path。
 
-    - `exposed_tools`:
-        - `None`  → 暴露全部工具（降级兜底，等同路由前行为）
-        - `()`    → 零工具（chitchat 场景，强迫 LLM 只做自然语言回复）
-        - `("a",)` → 严格子集（裁 schema、收敛决策空间）
-    - `fast_path_tool`: 非 None 时 Agent 绕过 LLM 直接派发该工具。
-      **当前设计仅支持零参数 + 终止型工具**（目前只有 escalate_to_human）。
-    - `final_template`: 搭配 fast_path 使用，决定 RunResult.final 固定文本。
+    fast_path_tool 仅支持零参数 + 终止型（当前只有 escalate_to_human）。
     """
 
     exposed_tools: tuple[str, ...] | None = None
@@ -102,22 +74,12 @@ class IntentPolicy:
     final_template: str | None = None
 
 
-# patch 内容遵循 "slim base + 规则下沉" 设计：base 只保留身份+格式（两行），
-# 每个 intent 的具体行为规则（调什么工具、要不要先确认 等）写在自己的 patch 里。
-# 连商品 catalog 也下沉到 product_inquiry 的 patch —— 只有商品咨询意图需要把
-# 用户口中的"蓝牙耳机"映射成 product_id，其他意图看不到 catalog 也不会误用。
-# `other` 兜底承担通用规则集（等同路由前的行为），但也不再塞 catalog。
-# ——LLM 每轮只看到"与当前意图相关的规则 + 必要的资料"，patch 真实承担路由价值。
-
 POLICY_MAP: dict[str, IntentPolicy] = {
     "escalation": IntentPolicy(
         exposed_tools=(),
         fast_path_tool="escalate_to_human",
         final_template="已转接人工",
     ),
-    # 与 escalation 行为同构（都转人工），但 intent 独立：
-    # escalation 由"用户主动要求"触发，negative_emotion 由"情绪判定"触发。
-    # 分两个 intent 是为了 W5 评测天然分桶——用 RunResult.intent 直接统计两类命中率。
     "negative_emotion": IntentPolicy(
         exposed_tools=(),
         fast_path_tool="escalate_to_human",
@@ -173,7 +135,7 @@ POLICY_MAP: dict[str, IntentPolicy] = {
         ),
     ),
     "other": IntentPolicy(
-        exposed_tools=None,  # 降级兜底：暴露全部工具
+        exposed_tools=None,
         prompt_patch=(
             _CATALOG_SNIPPET +
             "当前意图不明确或跨多个场景。请遵循以下通用规则：\n"
@@ -199,8 +161,7 @@ POLICY_MAP: dict[str, IntentPolicy] = {
 }
 
 
-# 分类用的 system prompt 保持紧凑但不吝惜样例——多意图识别全靠这几个例子锚定，
-# 缺了样例 LLM 会倾向"挑一个最像的主意图"，导致跨维度问题漏路由（blog 点）。
+# 样例锚定多意图识别——缺样例 LLM 会倾向"挑最像的主意图"，跨维度问题漏路由
 _CLASSIFIER_SYSTEM = """\
 你是电商客服对话的意图分类器。根据用户消息，从以下 8 个标签中选一个：
 
@@ -234,12 +195,7 @@ _CLASSIFIER_SYSTEM = """\
 
 
 class IntentRouter:
-    """漏斗分类器：规则 → LLM → 默认兜底。
-
-    - `chat_fn`: 允许测试注入假 LLM；默认复用 `agent.llm.chat`
-    - `confidence_threshold`: LLM 分类 confidence 低于此值 → 降级为 `other`
-      （0.6 是凭经验拍的起步值，W5 用真实样本标定后再调，见 PLAN.md §10）
-    """
+    """漏斗分类器：规则 → LLM → 默认兜底；LLM confidence < threshold 即降级为 other。"""
 
     def __init__(
         self,
@@ -254,25 +210,20 @@ class IntentRouter:
         if not text:
             return IntentDecision("other", 0.0, "default")
 
-        # 层 1：规则
         if _ESCALATION_RE.match(text):
             return IntentDecision("escalation", 1.0, "rules")
-        # 情绪规则用 search 不是 match——情绪词常在复合句中出现
         if _NEGATIVE_EMOTION_RE.search(text):
             return IntentDecision("negative_emotion", 1.0, "rules")
         if _CHITCHAT_RE.match(text):
             return IntentDecision("chitchat", 1.0, "rules")
 
-        # 层 2：LLM 分类
         llm_decision = self._classify_via_llm(text)
         if llm_decision is not None and llm_decision.confidence >= self._threshold:
             return llm_decision
 
-        # 层 3：兜底
         return IntentDecision("other", 0.0, "default")
 
     def _classify_via_llm(self, text: str) -> IntentDecision | None:
-        # 分类任务：短输入 + 1 行 JSON 输出 + 不用 tool，走 LIGHT_MODEL（PLAN §9 #11）
         try:
             resp = self._chat(
                 messages=[
@@ -283,7 +234,7 @@ class IntentRouter:
                 model=LIGHT_MODEL,
             )
             content = resp.choices[0].message.content or ""
-        except Exception:  # noqa: BLE001 — LLM 不稳定时统一降级
+        except Exception:  # noqa: BLE001
             return None
 
         parsed = _parse_intent_json(content)
@@ -296,10 +247,9 @@ class IntentRouter:
 
 
 def _parse_intent_json(content: str) -> tuple[str, float] | None:
-    """宽松解析 LLM 输出：兼容 markdown 代码块包裹；格式坏就返回 None。"""
+    """宽松解析 LLM 输出：兼容 markdown 代码块包裹；格式坏返回 None。"""
     text = content.strip()
     if text.startswith("```"):
-        # 去掉 ```json / ``` 包裹
         text = text.strip("`").strip()
         if text.lower().startswith("json"):
             text = text[4:].lstrip()
@@ -317,5 +267,4 @@ def _parse_intent_json(content: str) -> tuple[str, float] | None:
         confidence = float(confidence)
     except (TypeError, ValueError):
         return None
-    # clamp 到 [0, 1]
     return intent, max(0.0, min(1.0, confidence))
