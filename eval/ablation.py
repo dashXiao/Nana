@@ -293,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="冒烟：只用 1 条样本（快速验 3 配置的装配正确）")
     parser.add_argument("--configs", nargs="*", default=[],
                         help=f"只跑指定 config；可选：{[c.name for c in CONFIGS]}")
+    parser.add_argument("--scenarios", nargs="*", default=[],
+                        help="按剧本名过滤样本，可多个；不传则跑全集")
     parser.add_argument("--k", type=int, default=1,
                         help="Judge 每样本采样次数（默认 1）")
     parser.add_argument("--out", type=Path, default=None,
@@ -300,8 +302,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     samples = load_all()
+    if args.scenarios:
+        sc_set = set(args.scenarios)
+        samples = [s for s in samples if s.scenario in sc_set]
     if args.smoke:
         samples = samples[:1]
+    if not samples:
+        print("没有样本匹配过滤条件", file=sys.stderr)
+        return 1
     selected = _select_configs(args.configs)
 
     print(f"消融配置：{len(selected)} 个 × 样本 {len(samples)} 条 × Judge K={args.k}")
