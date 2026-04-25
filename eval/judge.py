@@ -106,8 +106,6 @@ def build_user_prompt(sample: dict) -> str:
 
 
 def _user_turns(sample: dict) -> list[str]:
-    """E2 样本里没直接存 user turns——从 loader 同路径读，保持 judge 纯读取。
-    但 harness 报告 sample 不含 turns；调用方得在 enrich_report 里把它拼进去。"""
     return sample.get("_turns", ["(turns 未附带；请主要依据工具调用与答复评判)"])
 
 

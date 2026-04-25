@@ -86,11 +86,6 @@ class ToolSpec:
             return err(ErrorCode.INTERNAL, f"{type(exc).__name__}: {exc}")
 
 
-def to_openai_tools(specs: list[ToolSpec]) -> list[dict]:
-    """把一组 ToolSpec 转为 OpenAI `tools` 数组。"""
-    return [s.to_openai() for s in specs]
-
-
 class ToolRegistry:
     """以 name 查找 ToolSpec，供 Agent 循环拿到 tool_call 后派发。"""
 
@@ -103,7 +98,7 @@ class ToolRegistry:
         return self._by_name.get(name)
 
     def openai_tools(self) -> list[dict]:
-        return to_openai_tools(list(self._by_name.values()))
+        return [s.to_openai() for s in self._by_name.values()]
 
     def dispatch(self, name: str, arguments: str | dict) -> dict:
         """按 name 查工具并执行；不存在时返回 NOT_FOUND 错误。"""

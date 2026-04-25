@@ -300,11 +300,7 @@ def run_sample(sample: Sample, agent: Agent, memory_dir: Path) -> SampleResult:
     else:
         _clear_long_term(memory_dir, sample.user_id)
 
-    usage_this_sample: dict[str, TokenUsage] = {}
-    # 换一份新的累加器用于本样本；agent.chat 闭包里的 dict 是 build_agent 时绑的那个，
-    # 这里我们直接复用 agent 的内部闭包 —— 为了隔离，每条样本前后做一次差值
-    # 实际实现：build_agent 传的 usage_by_model 是全局，每样本开始时 snapshot，结束时 diff
-    # 为简洁，本函数不处理 usage 分摊，由调用方 run_all 负责 snapshot / diff
+    # tokens 分摊由 run_all 在样本前后 snapshot/diff 后回填到 result.tokens_by_model
     error: str | None = None
     history: list[dict] | None = None
     observed_tools: list[str] = []
@@ -344,7 +340,7 @@ def run_sample(sample: Sample, agent: Agent, memory_dir: Path) -> SampleResult:
         observed_tools=tuple(observed_tools),
         final_answer=final_answer,
         latency_s=latency_s,
-        tokens_by_model=usage_this_sample,
+        tokens_by_model={},
         turns_count=len(sample.turns),
         tool_calls=tuple(tool_calls),
         error=error,

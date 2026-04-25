@@ -43,12 +43,6 @@ from agent.tools.query_policy import QUERY_POLICY_SPEC  # noqa: E402
 from agent.tools.query_product import QUERY_PRODUCT_SPEC  # noqa: E402
 from scripts.seed import seed  # noqa: E402
 
-# REPL 走 run_routed，base 只含身份 + 格式两行；
-# 连商品 catalog 都下沉到 product_inquiry 的 patch（只有该意图需要名称→ID 映射）。
-# 各意图的行为规则与必要资料由 POLICY_MAP[intent].prompt_patch 在每轮注入到 system 末尾。
-# 这样 LLM 每轮只看到"与当前意图相关的规则 + 必要资料"，patch 真实承担路由价值。
-SYSTEM_PROMPT = BASE_SYSTEM_PROMPT
-
 TOOLS = [
     QUERY_ORDERS_SPEC,
     QUERY_POLICY_SPEC,
@@ -162,7 +156,7 @@ def run() -> None:
     long_term = LongTermMemory()
     agent = Agent(
         registry=registry,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=BASE_SYSTEM_PROMPT,
         max_steps=6,
         short_term=short_term,
         long_term=long_term,

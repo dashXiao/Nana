@@ -38,20 +38,6 @@ _CATALOG_SNIPPET = (
 )
 
 
-VALID_INTENTS: frozenset[str] = frozenset(
-    {
-        "escalation",
-        "negative_emotion",
-        "chitchat",
-        "order_query",
-        "product_inquiry",
-        "policy_question",
-        "refund_request",
-        "other",
-    }
-)
-
-
 @dataclass(frozen=True)
 class IntentDecision:
     """一次分类的完整结果。"""
@@ -159,6 +145,8 @@ POLICY_MAP: dict[str, IntentPolicy] = {
         ),
     ),
 }
+
+VALID_INTENTS: frozenset[str] = frozenset(POLICY_MAP)
 
 
 # 样例锚定多意图识别——缺样例 LLM 会倾向"挑最像的主意图"，跨维度问题漏路由
