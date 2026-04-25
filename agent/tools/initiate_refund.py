@@ -62,12 +62,8 @@ def initiate_refund_handler(args: InitiateRefundInput) -> dict:
 INITIATE_REFUND_SPEC = ToolSpec(
     name="initiate_refund",
     description=(
-        "对指定订单发起退款，执行后状态置为 refunded。"
-        "调用前 LLM 应自行确认：(1) 订单属于当前用户；(2) 订单尚未退款；"
-        "(3) 订单满足 policies.md 中的退货时效政策（结合 query_orders 的 "
-        "days_since_shipped 与 query_policy 返回的条款自行判断）。"
-        "工具层只对前两点硬校验（NOT_FOUND / UNAUTHORIZED / INVALID_STATE），"
-        "时效政策完全交由 LLM 判断；不满足时 LLM 应向用户说明原因，不调用本工具。"
+        "对指定订单发起退款，执行后订单状态置为 refunded。"
+        "工具层硬校验存在性 / 归属 / 状态，对应 NOT_FOUND / UNAUTHORIZED / INVALID_STATE。"
     ),
     input_model=InitiateRefundInput,
     handler=initiate_refund_handler,

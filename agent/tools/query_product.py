@@ -81,8 +81,7 @@ QUERY_PRODUCT_SPEC = ToolSpec(
     name="query_product",
     description=(
         "按商品 ID 批量查询商品详情，返回价格、库存和完整介绍。"
-        "支持一次传多个 ID 做对比（如用户问'A 和 B 哪个好'）。"
-        "涉及价格、库存、规格参数的回答必须走此工具，不得凭记忆臆造。"
+        "支持一次传多个 ID 做对比。"
     ),
     input_model=QueryProductInput,
     handler=query_product_handler,

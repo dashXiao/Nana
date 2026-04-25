@@ -33,7 +33,7 @@ QUERY_POLICY_SPEC = ToolSpec(
     name="query_policy",
     description=(
         "查询 NanaShop 的售后与配送政策全文（退换货规则、发货/物流时效、退款到账、常见 FAQ）。"
-        "无需任何参数。所有涉及政策的回答都必须先调此工具，不得凭记忆臆造。"
+        "无需任何参数。"
     ),
     input_model=QueryPolicyInput,
     handler=query_policy_handler,

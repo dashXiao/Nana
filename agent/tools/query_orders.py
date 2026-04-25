@@ -71,9 +71,8 @@ def query_orders_handler(args: QueryOrdersInput) -> dict:
 QUERY_ORDERS_SPEC = ToolSpec(
     name="query_orders",
     description=(
-        "查询当前用户的全部订单列表，按下单时间倒序返回（最新在前）。"
+        "查询当前用户的所有订单（按下单时间倒序）。"
         "每条含订单号、商品、状态、下单/发货时间、已发货天数。"
-        "用户无需提供订单号——先调此工具看全貌，再在响应中定位具体订单。"
     ),
     input_model=QueryOrdersInput,
     handler=query_orders_handler,
