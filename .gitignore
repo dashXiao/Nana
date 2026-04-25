@@ -35,3 +35,7 @@ eval/reports/*.md
 
 # 会话记忆（本地产生，不入仓）
 memory/sessions/
+
+# work-flow
+PLAN.md
+CLAUDE.md
