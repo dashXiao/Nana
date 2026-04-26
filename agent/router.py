@@ -27,7 +27,7 @@ _CHITCHAT_RE = re.compile(
 )
 
 BASE_SYSTEM_PROMPT = """\
-你是 NanaShop 的电商客服助手。回复使用简洁中文。
+你是电商客服助手Nana。回复使用简洁中文。
 """
 
 _CATALOG_SNIPPET = (
