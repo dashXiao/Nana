@@ -67,32 +67,32 @@ nana/
 
 ## 评测
 
-### 整体指标
+### Overall Metrics
 
-| 维度         | 指标                      | 值 |
-|------------|-------------------------| -- |
-| **自动**     | pass rate（pass / total） | **36 / 42（86%）** |
-|            | Intent Accuracy         | 86% |
-|            | Tool Call               | 90% / 95% |
-|            | 禁词清洁率                   | 98% |
-|            | 平均延迟(s)                 | 4.04 |
-|            | 总 token(qwen-plus)      | 108K |
-|            | 总成本(¥)                  | 0.41 |
-| **LLM Judge** | Faithfulness(1-5)       | **4.76** |
-|            | Helpfulness(1-5)        | **4.74** |
-|            | Safety & Tone(1-5)      | **4.90** |
-| **Red Team** | 总体拦截率（拦截 / 15）          | **14 / 15（93%）** |
+| Category      | Metric                            | Value |
+|---------------|-----------------------------------|------|
+| **Auto**      | Pass Rate (pass / total)          | **36 / 42 (86%)** |
+|               | Intent Accuracy                   | 86% |
+|               | Tool Call (strict / set)          | 90% / 95% |
+|               | Forbidden-Phrase Cleanliness      | 98% |
+|               | Avg Latency (s)                   | 4.04 |
+|               | Total Tokens (qwen-plus)          | 108K |
+|               | Total Cost (¥)                    | 0.41 |
+| **LLM Judge** | Faithfulness (1-5)                | 4.76 |
+|               | Helpfulness (1-5)                 | 4.74 |
+|               | Safety & Tone (1-5)               | 4.90 |
+| **Red Team**  | Overall Block Rate (blocked / 15) | **14 / 15 (93%)** |
 
 
 ### 消融实验
 对比（1）使用单一模型（全用主模型） （2）无意图识别（system prompt, tools 全量加载）  
 量化模型分层与意图识别的贡献
 
-| 配置           | pass         | Intent Acc | Tokens | 成本(¥) | Faith | Help | Tone |
-|--------------|--------------|------------| ------ | ------- | ----- | ---- | ---- |
-| Baseline     | 35 / 42（83%） | 83%        | 111K | 0.42 | 4.76 | 4.62 | 4.90 |
-| 单一模型         | 36 / 42（86%） | 88%        | 121K（+9%） | 0.53（+26%） | 4.88 | 4.83 | 4.95 |
-| 无意图识别        |              |            | 157K（+42%） | 0.68（+61%） | 4.81 | 4.74 | 4.88 |
+| Config            | Pass            | Intent Acc | Tokens       | Cost (¥)     | Faith | Help | Tone |
+|-------------------|-----------------|------------|--------------|--------------|-------|------|------|
+| Baseline          | 35 / 42 (83%)   | 83%        | 111K         | 0.42         | 4.76  | 4.62 | 4.90 |
+| Single Model      | 36 / 42 (86%)   | 88%        | 121K (+9%)   | 0.53 (+26%)  | 4.88  | 4.83 | 4.95 |
+| No Intent Routing |                 |            | 157K (+42%)  | 0.68 (+61%)  | 4.81  | 4.74 | 4.88 |
 
 
 ### 防注入拦截
@@ -100,6 +100,6 @@ nana/
 - `guardrails`：入口处，正则关键词匹配命中
 - `downstream`：规则层漏召回 → 下游 system prompt 兜底
 
-| 样本 | guardrails | downstream | bypassed | 拦截率   |
-|----|------------|------------|----------|-------|
-| 30 | 14         | 13         | 3        | 90.0% |
+| Samples | guardrails | downstream | bypassed | Block Rate |
+|---------|------------|------------|----------|------------|
+| 30      | 14         | 13         | 3        | 90.0%      |

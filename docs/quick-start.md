@@ -26,7 +26,7 @@ Windows (PowerShell)
 ### 快速开始
 
 ```bash
-git clone <repo-url> nana && cd nana
+git clone https://github.com/dashXiao/Nana.git && cd nana
 
 # 配置 API Key
 cp .env.example .env
