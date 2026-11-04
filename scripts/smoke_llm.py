@@ -1,11 +1,8 @@
-"""主模型 tool-use 冒烟测试（具体型号见 .env）。
+"""Smoke test for main-model tool use (model configured in .env).
 
-目的：
-- 验证 DASHSCOPE_API_KEY 生效、OpenAI 兼容端点可通
-- 验证 `ToolSpec` → OpenAI tools schema 的转换能被主模型正确理解
-- 打印完整 function-calling 往返，供后续 ReAct 循环参考
-
-跑法：uv run python scripts/smoke_llm.py
+Check API credentials and endpoint access, verify ToolSpec schemas, and print the
+complete function-calling round trip as a reference for the ReAct loop.
+Run: uv run python scripts/smoke_llm.py
 """
 
 from __future__ import annotations
@@ -22,12 +19,12 @@ from agent.llm import MODEL, chat  # noqa: E402
 from agent.tools._contract import ToolRegistry, ToolSpec, ok  # noqa: E402
 
 
-# --- 定义一个 dummy 工具：两数相加 ---
+# --- Dummy tool: add two numbers ---
 
 
 class AddInput(BaseModel):
-    a: float = Field(description="第一个加数")
-    b: float = Field(description="第二个加数")
+    a: float = Field(description="First number to add")
+    b: float = Field(description="Second number to add")
 
 
 def add_handler(args: AddInput) -> dict:
@@ -36,7 +33,7 @@ def add_handler(args: AddInput) -> dict:
 
 ADD_SPEC = ToolSpec(
     name="add_numbers",
-    description="对两个数字求和并返回结果。只有当用户明确需要计算时才调用。",
+    description="Add two numbers and return the sum. Call only for an explicit calculation request.",
     input_model=AddInput,
     handler=add_handler,
 )
@@ -46,31 +43,31 @@ def run() -> None:
     registry = ToolRegistry([ADD_SPEC])
 
     messages: list[dict] = [
-        {"role": "system", "content": "你是一个助手。需要计算时请调用可用工具，不要自己心算。"},
-        {"role": "user", "content": "请用工具帮我算 13 + 29 等于多少？"},
+        {"role": "system", "content": "You are an assistant. Use available tools for calculations instead of mental arithmetic."},
+        {"role": "user", "content": "Please use the tool to calculate 13 + 29."},
     ]
 
     print(f"=== model: {MODEL} ===")
-    print(">>> 第 1 轮：发送用户消息，期望模型返回 tool_call")
+    print(">>> Round 1: send the user message; expect a tool_call")
 
     resp = chat(messages=messages, tools=registry.openai_tools())
     msg = resp.choices[0].message
 
     if not msg.tool_calls:
-        print("⚠️ 模型没有调用工具，直接返回：", msg.content)
+        print("⚠️ Model returned without calling a tool:", msg.content)
         return
 
-    print(f"  · 模型调用工具：{[tc.function.name for tc in msg.tool_calls]}")
+    print(f"  · Model tool calls:{[tc.function.name for tc in msg.tool_calls]}")
     for tc in msg.tool_calls:
         print(f"    - {tc.function.name}({tc.function.arguments})")
 
-    # 把 assistant 的 tool_call 消息追加回历史（OpenAI 协议要求）
+    # Append the assistant tool-call message as required by the OpenAI protocol.
     messages.append(msg.model_dump(exclude_none=True))
 
-    # 执行每个 tool_call 并把结果写回 messages
+    # Execute each tool call and append its result to messages.
     for tc in msg.tool_calls:
         result = registry.dispatch(tc.function.name, tc.function.arguments)
-        print(f"  · 工具返回：{result}")
+        print(f"  · Tool result:{result}")
         messages.append(
             {
                 "role": "tool",
@@ -79,10 +76,10 @@ def run() -> None:
             }
         )
 
-    print("\n>>> 第 2 轮：带着 tool_result 回送，期望模型给出自然语言答复")
+    print("\n>>> Round 2: send tool_result; expect a natural-language reply")
     resp2 = chat(messages=messages, tools=registry.openai_tools())
     final = resp2.choices[0].message.content
-    print(f"  · 模型最终回复：{final}")
+    print(f"  · Final model reply:{final}")
 
     print("\n✅ smoke test passed.")
 

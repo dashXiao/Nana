@@ -1,15 +1,15 @@
-"""Nana Agent 交互式 REPL（人工测试用）。
+"""Interactive Nana Agent REPL for manual testing.
 
-跑法：uv run python scripts/chat.py
-命令：
-  /quit        退出（会把当前会话写入长期记忆）
-  /reset       清空本轮会话历史（重开一个会话，但不 reseed DB；写入长期记忆）
-  /user U002   切到 U002（同时清空历史，避免跨用户串话；写入长期记忆）
-  /tools       列出当前注册的工具
-  /help        显示本帮助
+Run: uv run python scripts/chat.py
+Commands:
+  /quit        Save the session to long-term memory and exit.
+  /reset       Save and clear history without reseeding the database.
+  /user U002   Save history and switch users, clearing history to isolate accounts.
+  /tools       List registered tools.
+  /help        Show command help.
 
-启动时会 seed 一次，保证 DB 是确定的初始状态。
-每轮按"路由 → 暴露工具 → system → 记忆事件 → 工具调用"顺序打印，便于肉眼审查。
+The database is seeded once at startup for a deterministic initial state.
+Each turn prints routing, exposed tools, memory events, system prompt, and tool calls.
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ import json
 import sys
 from pathlib import Path
 
-# 某些 IDE 终端（PyCharm / VSCode 的默认配置）LANG 不是 utf-8，
-# input() 会用 surrogateescape 把中文读成 \udcXX 孤立代理，
-# 后续拼 JSON 发给 LLM 时就崩 UnicodeEncodeError。这里强制 UTF-8。
+# Some IDE terminals use a non-UTF-8 locale.
+# input() may read non-ASCII text as surrogateescape code points,
+# causing UnicodeEncodeError in JSON requests. Force UTF-8 here.
 for _stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         try:
@@ -53,7 +53,7 @@ TOOLS = [
 
 
 def _tool_summary(inv_result: dict) -> str:
-    """把工具返回压成一行便于终端阅读。"""
+    """Compact tool results into one line for terminal display."""
     if not inv_result.get("ok"):
         return f"ERR {inv_result.get('error_code')}: {inv_result.get('message')}"
     data = inv_result["data"]
@@ -70,9 +70,7 @@ def _tool_summary(inv_result: dict) -> str:
 
 
 def _print_trace(result: RunResult) -> None:
-    """按"输入→处理→输出"数据流打印本轮轨迹：
-    route → exposed_tools → memory events → system → 工具调用。
-    """
+    """Print the trace in data-flow order: route, exposed tools, memory, system, then tool calls."""
     print(
         f"  [route] {result.route_path}:{result.intent} "
         f"(conf={result.confidence:.2f})"
@@ -80,34 +78,34 @@ def _print_trace(result: RunResult) -> None:
 
     policy = POLICY_MAP.get(result.intent)
 
-    # 工具子集：肉眼确认暴露给 LLM 的工具数量真的被裁了
+    # Display the subset to verify that tool exposure is restricted.
     if policy is None:
         tools_display = "(unknown intent)"
     elif policy.exposed_tools is None:
-        tools_display = "ALL（兜底：暴露全部 5 工具）"
+        tools_display = "ALL (fallback: all 5 tools exposed)"
     elif len(policy.exposed_tools) == 0:
-        tools_display = "() （零工具，LLM 只能自然语言回复）"
+        tools_display = "() (no tools; natural-language replies only)"
     else:
         tools_display = ", ".join(policy.exposed_tools)
     print(f"  [exposed_tools] {tools_display}")
 
-    # 记忆事件：长期 load / 短期 compress 都在这里冒泡；肉眼确认压缩/加载真的发生
+    # Show long-term loads and short-term compression events for inspection.
     for ev in result.memory_events:
-        # detail 可能含换行（尤其 compress 带完整摘要文本），压成单行更易读
+        # Flatten multiline details, including full compression summaries, for readability.
         detail = ev.detail.replace("\n", " ")
         print(f"  [memory] {ev.kind}: {detail}")
 
-    # fast_path 绕 LLM，没有 system 调用可打；其他路径打完整 system
+    # The fast path skips the LLM; other paths print the complete system prompt.
     if policy is not None and policy.fast_path_tool is not None:
-        print(f"  [fast_path] {policy.fast_path_tool} → 绕过 LLM，无 chat.completions 调用")
+        print(f"  [fast_path] {policy.fast_path_tool} → bypasses the LLM; no chat.completions call")
     elif result.messages and result.messages[0].get("role") == "system":
         sys_content = result.messages[0]["content"]
-        print("  ┌─ [system prompt 本轮实际送给 LLM 的完整内容] " + "─" * 20)
+        print("  ┌─ [complete system prompt sent to the LLM this turn] " + "─" * 20)
         for line in sys_content.splitlines():
             print(f"  │ {line}")
         print("  └─" + "─" * 68)
 
-    # 实际工具调用：路由/prompt 是"输入侧"，工具调用是"输出侧"，按数据流顺序放最后。
+    # Tool calls follow routing and prompt inputs in data-flow order.
     for step in result.steps:
         for inv in step.invocations:
             args = json.dumps(inv.arguments, ensure_ascii=False)
@@ -116,12 +114,12 @@ def _print_trace(result: RunResult) -> None:
 
 def _print_help() -> None:
     print(
-        "可用命令：\n"
-        "  /quit        退出（会话写入长期记忆）\n"
-        "  /reset       清空本轮会话历史（会话写入长期记忆）\n"
-        "  /user U00X   切到指定用户（同时清空历史 + 写入长期记忆）\n"
-        "  /tools       列出注册的工具\n"
-        "  /help        显示本帮助\n"
+        "Available commands:\n"
+        "  /quit        Exit (save session to long-term memory)\n"
+        "  /reset       Clear history (save session to long-term memory)\n"
+        "  /user U00X   Switch users (save session and clear history)\n"
+        "  /tools       List registered tools\n"
+        "  /help        Show this help\n"
     )
 
 
@@ -134,7 +132,7 @@ def _print_tools(registry: ToolRegistry) -> None:
 def _flush_session_to_long_term(
     agent: Agent, user_id: str, history: list[dict] | None
 ) -> None:
-    """会话切换/退出时把当前历史写回长期记忆，并打印写入事件。"""
+    """Save the current history to long-term memory on session changes or exit, and print events."""
     if not history:
         return
     events = agent.save_long_term(user_id, history)
@@ -144,14 +142,14 @@ def _flush_session_to_long_term(
 
 
 def run() -> None:
-    print(f"=== NanaShop Agent REPL · 主 {MODEL} / 轻 {LIGHT_MODEL} ===")
-    print("启动时先 seed 一次，确保初始状态干净...")
+    print(f"=== NanaShop Agent REPL · main {MODEL} / light {LIGHT_MODEL} ===")
+    print("Seeding the database for a clean initial state...")
     seed()
     print()
 
     registry = ToolRegistry(TOOLS)
-    # 短期：Summary-Buffer，用户轮数 >4 时把早期压成一段 system 摘要，保留末 1 轮
-    # 长期：per-user md，冷启动载入最近 3 段，本会话结束时追加一段
+    # Short-term: compact history above four user turns and retain the latest turn.
+    # Long-term: load the latest three per-user summaries at cold start; append on session end.
     short_term = ShortTermMemory(max_rounds=4, keep_recent=1)
     long_term = LongTermMemory()
     agent = Agent(
@@ -165,7 +163,7 @@ def run() -> None:
     user_id = "U001"
     history: list[dict] | None = None
 
-    print(f"当前用户：{user_id}（张三）。输入 /help 看命令，Ctrl+C 或 /quit 退出。\n")
+    print(f"Current user: {user_id} (Alex Chen). Use /help for commands, Ctrl+C or /quit to exit.\n")
 
     while True:
         try:
@@ -173,16 +171,16 @@ def run() -> None:
         except (KeyboardInterrupt, EOFError):
             print()
             _flush_session_to_long_term(agent, user_id, history)
-            print("再见。")
+            print("Goodbye.")
             return
 
         if not line:
             continue
 
-        # --- 斜杠命令 ---
+        # --- Slash commands ---
         if line == "/quit" or line == "/exit":
             _flush_session_to_long_term(agent, user_id, history)
-            print("再见。")
+            print("Goodbye.")
             return
         if line == "/help":
             _print_help()
@@ -190,7 +188,7 @@ def run() -> None:
         if line == "/reset":
             _flush_session_to_long_term(agent, user_id, history)
             history = None
-            print("(会话历史已清空；上一会话已写入长期记忆)\n")
+            print("(History cleared; previous session saved to long-term memory)\n")
             continue
         if line == "/tools":
             _print_tools(registry)
@@ -198,37 +196,37 @@ def run() -> None:
         if line.startswith("/user "):
             new_uid = line.split(None, 1)[1].strip()
             if not new_uid:
-                print("用法：/user U001")
+                print("Usage: /user U001")
                 continue
             _flush_session_to_long_term(agent, user_id, history)
             user_id = new_uid
             history = None
-            print(f"(切到 {user_id}，历史已清空；上一会话已写入长期记忆)\n")
+            print(f"(Switched to {user_id}; history cleared and previous session saved to long-term memory)\n")
             continue
         if line.startswith("/"):
-            print(f"未知命令：{line}（试试 /help）")
+            print(f"Unknown command: {line} (try /help)")
             continue
 
-        # --- 正常对话（走意图路由） ---
+        # --- Regular conversation through intent routing ---
         try:
             result = agent.run_routed(line, user_id=user_id, history=history)
-        except Exception as exc:  # noqa: BLE001 — REPL 里兜底保活
+        except Exception as exc:  # noqa: BLE001 — Keep the REPL alive on agent errors.
             print(f"  [error] {type(exc).__name__}: {exc}\n")
             continue
 
         _print_trace(result)
 
-        final = result.final or "(未收敛：达到 max_steps，请 /reset 后换种问法)"
+        final = result.final or "(No final answer: max_steps reached. Use /reset and rephrase your request.)"
         print(f"\n[agent] {final}\n")
 
-        # 转人工即终态：写回长期、清空历史，让用户从干净状态继续
-        if result.final == "已转接人工":
+        # A handoff ends the session: save and clear history before the next conversation.
+        if result.final == "Transferred to a human agent.":
             _flush_session_to_long_term(agent, user_id, result.messages)
             history = None
-            print("(会话已转人工；历史已写入长期记忆并清空，输入新问题可开启下一轮)\n")
+            print("(Session handed off; history saved and cleared. Enter a new question to start again.)\n")
             continue
 
-        # 把本轮结果作为下一轮的 history，维持多轮上下文
+        # Use this turn's messages as history to preserve multi-turn context.
         history = result.messages
 
 

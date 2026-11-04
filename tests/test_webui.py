@@ -1,8 +1,7 @@
-"""Gradio Web UI 事件处理器纯函数单测。
+"""Pure-function tests for Gradio event handlers.
 
-不起 gradio 服务；用 stub agent 验 respond / new_conversation / switch_user /
-format_turn_trace / format_error_trace / render_trace_log 这些纯函数把"输入
-状态 → 新状态"映射对。
+No server or live model calls. Use a stub agent to check state transitions for
+respond, new_conversation, switch_user, and the trace renderers.
 """
 
 from __future__ import annotations
@@ -32,11 +31,11 @@ from scripts.webui import (
 
 @dataclass
 class _FakeRunResult:
-    """respond 路径里 agent.run_routed 的返回；与 RunResult 对齐最小字段。"""
+    """Minimal run_routed return value matching the fields consumed from RunResult."""
 
     final: str | None
     messages: list[dict]
-    # trace 所需字段，默认值让既有测试无需关心
+    # Trace fields have defaults so unrelated tests need not set them.
     intent: str = "other"
     route_path: str = "default"
     confidence: float = 0.0
@@ -46,7 +45,7 @@ class _FakeRunResult:
 
 @dataclass
 class _StubAgent:
-    """记录 run_routed / save_long_term 的调用；不连 LLM。"""
+    """Record run_routed and save_long_term calls without contacting an LLM."""
 
     reply: str | None = "ok"
     raise_exc: Exception | None = None
@@ -59,7 +58,7 @@ class _StubAgent:
         self.run_calls.append({"msg": msg, "user_id": user_id, "history": history})
         if self.raise_exc is not None:
             raise self.raise_exc
-        # 模拟 agent 内部维护：在 prev_history 基础上把本轮拼进去
+        # Mimic internal agent history by appending this turn to prev_history.
         new_hist = list(history or []) + [
             {"role": "user", "content": msg},
             {"role": "assistant", "content": self.reply or ""},
@@ -75,62 +74,62 @@ class _StubAgent:
 
 
 def test_respond_appends_user_and_assistant_bubbles():
-    agent = _StubAgent(reply="已为您查到订单 O001…")
+    agent = _StubAgent(reply="I found your order O001...")
     out, display, state, _trace = respond(
-        "查我的订单", [], None, "U001（张三）", agent=agent,
+        "Check my orders", [], None, "U001 (Alex Chen)", agent=agent,
     )
-    assert out == ""  # 输入框清空
+    assert out == ""  # Input box cleared
     assert len(display) == 2
-    assert display[0] == {"role": "user", "content": "查我的订单"}
-    assert display[1] == {"role": "assistant", "content": "已为您查到订单 O001…"}
+    assert display[0] == {"role": "user", "content": "Check my orders"}
+    assert display[1] == {"role": "assistant", "content": "I found your order O001..."}
     assert state["user_id"] == "U001"
     assert state["history"] is not None
-    # agent 被调用且 user_id 映射正确
+    # The agent receives the correct user_id.
     assert agent.run_calls[0]["user_id"] == "U001"
-    assert agent.run_calls[0]["msg"] == "查我的订单"
+    assert agent.run_calls[0]["msg"] == "Check my orders"
 
 
 def test_respond_passes_existing_history_to_agent():
-    """多轮：prev session_state.history 必须被带到下一轮 run_routed 里。"""
-    agent = _StubAgent(reply="好的")
+    """Forward previous session history into the next run_routed turn."""
+    agent = _StubAgent(reply="Okay")
     seed_hist = [{"role": "system", "content": "sys"}]
     initial_state = {"history": seed_hist, "user_id": "U001"}
     out, display, state, _trace = respond(
-        "第二轮", [], initial_state, "U001（张三）", agent=agent,
+        "Second turn", [], initial_state, "U001 (Alex Chen)", agent=agent,
     )
     assert agent.run_calls[0]["history"] == seed_hist
-    # 更新后的 history 已替换（本测试里 stub 实现返回 prev+2）
+    # The stub returns previous history plus two messages.
     assert len(state["history"]) == 3
 
 
 def test_respond_maps_user_label_to_id():
     agent = _StubAgent()
-    respond("hi", [], None, "U002（李四）", agent=agent)
+    respond("hi", [], None, "U002 (Nina Li)", agent=agent)
     assert agent.run_calls[0]["user_id"] == "U002"
 
 
 def test_respond_empty_message_no_call():
     agent = _StubAgent()
-    out, display, state, trace = respond("   ", [], None, "U001（张三）", agent=agent)
+    out, display, state, trace = respond("   ", [], None, "U001 (Alex Chen)", agent=agent)
     assert agent.run_calls == []
     assert display == []
-    assert state == {}  # 不变
-    assert trace == ""  # 空消息不追加 trace
+    assert state == {}  # Unchanged
+    assert trace == ""  # An empty message does not append a trace.
 
 
 def test_respond_agent_exception_becomes_error_bubble():
     agent = _StubAgent(raise_exc=RuntimeError("boom"))
-    out, display, state, trace = respond("x", [], None, "U001（张三）", agent=agent)
-    assert "[内部异常]" in display[-1]["content"]
+    out, display, state, trace = respond("x", [], None, "U001 (Alex Chen)", agent=agent)
+    assert "[Internal error]" in display[-1]["content"]
     assert "RuntimeError" in display[-1]["content"]
-    # trace 走 error 分支
+    # The trace uses the error branch.
     assert "[error]" in trace
     assert "RuntimeError" in trace and "boom" in trace
 
 
 def test_respond_fallback_when_final_none():
-    agent = _StubAgent(reply=None)  # agent 未收敛
-    out, display, state, _trace = respond("x", [], None, "U001（张三）", agent=agent)
+    agent = _StubAgent(reply=None)  # The agent did not reach a final answer.
+    out, display, state, _trace = respond("x", [], None, "U001 (Alex Chen)", agent=agent)
     assert display[-1]["content"] == FALLBACK_REPLY
 
 
@@ -140,15 +139,15 @@ def test_respond_preserves_previous_display_turns():
         {"role": "user", "content": "q1"},
         {"role": "assistant", "content": "r1"},
     ]
-    _, display, _, _ = respond("q2", prev_display, None, "U001（张三）", agent=agent)
+    _, display, _, _ = respond("q2", prev_display, None, "U001 (Alex Chen)", agent=agent)
     assert [m["content"] for m in display] == ["q1", "r1", "q2", "r2"]
 
 
 def test_respond_returns_nonempty_trace_on_success():
-    """正常路径：trace_text 非空、含 route 行（更细断言留给 format_turn_trace 测试）。"""
+    """A normal response includes a nonempty trace with routing information."""
     agent = _StubAgent(reply="ok")
-    _, _, _, trace = respond("hi", [], None, "U001（张三）", agent=agent)
-    assert trace  # 非空
+    _, _, _, trace = respond("hi", [], None, "U001 (Alex Chen)", agent=agent)
+    assert trace  # Nonempty
     assert "[route]" in trace
 
 
@@ -161,8 +160,8 @@ def test_new_conversation_flushes_to_long_term_and_clears_display():
     display, new_state = new_conversation(state, agent=agent)
     assert display == []
     assert new_state["history"] is None
-    assert new_state["user_id"] == "U001"  # user 保留
-    # 长期记忆被写入
+    assert new_state["user_id"] == "U001"  # Preserve the user.
+    # Save long-term memory.
     assert agent.save_calls == [("U001", [{"role": "user", "content": "old"}])]
 
 
@@ -188,7 +187,7 @@ def test_new_conversation_noop_if_state_missing():
 def test_switch_user_flushes_and_changes_user():
     agent = _StubAgent()
     state = {"history": [{"role": "user", "content": "x"}], "user_id": "U001"}
-    display, new_state = switch_user("U002（李四）", state, agent=agent)
+    display, new_state = switch_user("U002 (Nina Li)", state, agent=agent)
     assert display == []
     assert new_state["user_id"] == "U002"
     assert new_state["history"] is None
@@ -198,19 +197,19 @@ def test_switch_user_flushes_and_changes_user():
 def test_switch_user_without_prior_history_no_save():
     agent = _StubAgent()
     state = {"history": None, "user_id": "U001"}
-    display, new_state = switch_user("U002（李四）", state, agent=agent)
+    display, new_state = switch_user("U002 (Nina Li)", state, agent=agent)
     assert new_state["user_id"] == "U002"
     assert agent.save_calls == []
 
 
-# ---------- USERS 映射 ----------
+# ---------- USERS mapping ----------
 
 
 def test_users_constant_shape():
-    """UI 依赖的 label→id 映射不能写错：都有 Uxxx id、label 包含括号。"""
+    """User labels must map to valid Uxxx IDs and include parentheses."""
     for label, uid in USERS:
         assert uid.startswith("U")
-        assert "（" in label and "）" in label
+        assert "(" in label and ")" in label
 
 
 @pytest.mark.parametrize("label,uid", USERS)
@@ -232,7 +231,7 @@ def _make_result(
     steps: list | None = None,
     system_content: str | None = "SYS PROMPT BODY",
 ) -> RunResult:
-    """构造一个最小 RunResult 用于 trace 渲染测试。"""
+    """Build a minimal RunResult for trace rendering tests."""
     messages: list[dict] = []
     if system_content is not None:
         messages.append({"role": "system", "content": system_content})
@@ -255,37 +254,60 @@ def test_format_turn_trace_contains_route_line():
 
 
 def test_format_turn_trace_exposed_tools_for_known_intent():
-    """order_query 有具体 exposed_tools 子集，渲染应列出名字。"""
+    """order_query exposes a named tool subset that must appear in the trace."""
     md = format_turn_trace(_make_result(intent="order_query"))
     assert "[exposed_tools]" in md
-    assert "query_orders" in md  # order_query 暴露这个工具
+    assert "query_orders" in md  # order_query exposes this tool.
 
 
 def test_format_turn_trace_exposed_tools_other_fallback():
-    """other 兜底：POLICY_MAP[other].exposed_tools is None → 渲染 "ALL"。"""
+    """The other fallback uses exposed_tools=None and renders ALL."""
     md = format_turn_trace(_make_result(intent="other"))
     assert "ALL" in md
 
 
 def test_format_turn_trace_fast_path_skips_system_dump():
-    """escalation 走 fast_path：不应把 system prompt 打出来，应显示 fast_path 行。"""
+    """Escalation displays the fast path rather than a system prompt."""
     md = format_turn_trace(
         _make_result(intent="escalation", system_content="some-sys"),
     )
     assert "[fast_path]" in md
     assert "escalate_to_human" in md
-    assert "some-sys" not in md  # fast_path 不回显 system
+    assert "some-sys" not in md  # The fast path does not echo the system prompt.
 
 
-def test_format_turn_trace_omits_memory_section():
-    """记忆事件不单列——长期记忆已嵌在 system prompt 里，单独一栏会视觉重复。"""
+def test_format_turn_trace_omits_unloaded_memory_events():
+    """Raw memory events alone must not be presented as loaded prompt context."""
     evs = [
-        MemoryEvent(kind="load_long_term", detail="命中 2 段历史"),
+        MemoryEvent(kind="load_long_term", detail="Loaded 2 history sections"),
         MemoryEvent(kind="compress", detail="summary"),
     ]
     md = format_turn_trace(_make_result(memory_events=evs))
     assert "[memory]" not in md
     assert "load_long_term" not in md
+
+
+def test_format_turn_trace_shows_actual_loaded_memory():
+    memory = "[Long-term memory: recent session summaries (count: 1)]\nThe user asked about P002."
+    md = format_turn_trace(_make_result(system_content=f"Base prompt\n\n{memory}"))
+    assert "[loaded memory]" in md
+    assert memory in md
+    assert "<details><summary>[system prompt]" in md
+    assert "<details open" not in md
+
+
+def test_format_turn_trace_explains_guardrail_short_circuit():
+    md = format_turn_trace(_make_result(
+        intent="injection",
+        route_path="guardrails",
+        system_content=None,
+        memory_events=[MemoryEvent("guardrail_injection", "prompt_leak")],
+    ))
+    assert "prompt_leak" in md
+    assert "0 model calls" in md
+    assert "0 tool calls" in md
+    assert "blocked before routing" in md
+    assert "unknown intent" not in md
 
 
 def test_format_turn_trace_renders_tool_calls_with_args_and_result():
@@ -321,7 +343,7 @@ def test_format_turn_trace_tool_error_summary():
                 result={
                     "ok": False,
                     "error_code": "NOT_FOUND",
-                    "message": "订单不存在",
+                    "message": "Order does not exist",
                 },
             ),
         ],
@@ -331,15 +353,14 @@ def test_format_turn_trace_tool_error_summary():
 
 
 def test_format_turn_trace_system_dump_as_code_fence():
-    """system prompt 用 code fence 包裹——防止内嵌的 markdown（如 `## 2026-..`
-    被渲成 h2 巨字、空行被吞出大缝）。code 外观由 CSS 压平为"无背景 + 同字号"。"""
+    """Fence system prompts to preserve embedded Markdown without headings or layout gaps; CSS softens the code styling."""
     md = format_turn_trace(_make_result(
         intent="order_query", system_content="Line1\n## Heading inside\n\nLine2",
     ))
     assert "[system prompt]" in md
-    assert "```" in md  # 用 fence 隔离 markdown 解析
+    assert "```" in md  # Use fences to prevent Markdown parsing.
     assert "Line1" in md and "Line2" in md
-    assert "## Heading inside" in md  # 原文保留，不被解析成 heading
+    assert "## Heading inside" in md  # Preserve raw text rather than rendering a heading.
 
 
 # ---------- format_error_trace ----------
@@ -365,5 +386,5 @@ def test_render_trace_log_multiple_turns_numbered():
     assert "Turn 2" in md
     assert "Turn 3" in md
     assert "alpha" in md and "beta" in md and "gamma" in md
-    # 分节用 --- 分隔
+    # Separate sections with ---.
     assert md.count("---") == 2

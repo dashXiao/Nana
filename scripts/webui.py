@@ -1,16 +1,14 @@
-"""Nana Agent Gradio Web UI（主流 AI 问答界面风格：消息气泡 + 输入框 + 用户切换）。
+"""Gradio Web UI for Nana Agent with chat bubbles, input, and user switching.
 
-跑法：uv run python scripts/webui.py
-默认监听 http://127.0.0.1:7860 ；`--share` 开公网隧道（gradio 托管）。
+Run: uv run python scripts/webui.py
+Listens on http://127.0.0.1:7860; --share enables a Gradio-hosted public tunnel.
 
-设计要点：
-- **UI 展示 vs Agent history 分两条**：gr.Chatbot 只接收 user/assistant 两类气泡，
-  agent 内部 history 含 system / tool_call / tool 三类，分开维护避免把工具流水泄给前端
-- **gr.State 按会话隔离**：每个浏览器 tab 一份状态，不会串台（取代 REPL 的全局变量）
-- **新对话 / 切换用户**：与 REPL 语义一致——把当前 history 写回长期记忆再清空
-- **启动 seed 一次**：demo 从确定初始态开；持久化到 `db/nana.db` + `memory/sessions/`
-- **调试轨迹开关**：侧栏勾上「显示调试轨迹」后，聊天框下方挂 per-turn markdown 面板，
-  展示路由 / 暴露工具 / 记忆事件 / system / 工具调用；与 scripts/chat.py 打的 trace 同构
+Design:
+- Separate user-facing bubbles from internal system, tool-call, and tool history.
+- gr.State isolates state per browser session.
+- New chats and user switches save long-term memory before clearing history.
+- Seed once at startup; persist to db/nana.db and memory/sessions/.
+- An optional trace panel shows routing, exposed tools, prompts, and tool calls.
 """
 
 from __future__ import annotations
@@ -37,15 +35,15 @@ from scripts.seed import seed  # noqa: E402
 
 
 USERS = [
-    ("U001（张三）", "U001"),
-    ("U002（李四）", "U002"),
+    ("U001 (Alex Chen)", "U001"),
+    ("U002 (Nina Li)", "U002"),
 ]
 _USER_VALUE_TO_ID = dict(USERS)
 _DEFAULT_USER_LABEL = USERS[0][0]
 
 
 def build_agent() -> Agent:
-    """与 REPL 同构的 agent 装配。"""
+    """Assemble the agent with the same components as the REPL."""
     registry = ToolRegistry([
         QUERY_ORDERS_SPEC,
         QUERY_POLICY_SPEC,
@@ -62,15 +60,15 @@ def build_agent() -> Agent:
     )
 
 
-# ---------- 纯函数：事件处理（单测全部在这里） ----------
+# ---------- Pure event handlers, covered by unit tests ----------
 
 
-FALLBACK_REPLY = "抱歉，未收敛到答复（可能达到最大步数），请换个说法重试。"
-EMPTY_TRACE_MD = "_(尚无调用轨迹)_"
+FALLBACK_REPLY = "I could not complete a response within the step limit. Please rephrase and try again."
+EMPTY_TRACE_MD = "_(No trace yet)_"
 
 
 def _tool_summary(inv_result: dict) -> str:
-    """把工具返回压成一行便于阅读（与 scripts/chat.py 同构）。"""
+    """Compact tool results into one readable line, as in scripts/chat.py."""
     if not inv_result.get("ok"):
         return f"ERR {inv_result.get('error_code')}: {inv_result.get('message')}"
     data = inv_result["data"]
@@ -87,11 +85,11 @@ def _tool_summary(inv_result: dict) -> str:
 
 
 def format_turn_trace(result: RunResult) -> str:
-    """把一轮 RunResult 渲染成 markdown，供调试面板展示。
+    """Render one RunResult as Markdown for the debug panel.
 
-    与 `scripts/chat.py::_print_trace` 同源，顺序：route → exposed_tools →
-    system / fast_path → 工具调用。记忆事件不单列——长期记忆已经嵌在 system
-    prompt 里，单独一栏会重复。system 走 blockquote（避免视觉上突兀的代码块）。
+    Show routing, guardrail matches, loaded memory, and executed tools first.
+    Keep the complete system prompt in a collapsed disclosure so supporting
+    evidence stays visible. Render prompt and memory text inside code fences.
     """
     lines: list[str] = [
         f"- **[route]** {result.route_path}:{result.intent} "
@@ -99,50 +97,81 @@ def format_turn_trace(result: RunResult) -> str:
     ]
 
     policy = POLICY_MAP.get(result.intent)
-    if policy is None:
+    if result.route_path == "guardrails":
+        tools_display = "() (blocked before routing)"
+    elif policy is None:
         tools_display = "(unknown intent)"
     elif policy.exposed_tools is None:
-        tools_display = "ALL（兜底：全 5 工具）"
+        tools_display = "ALL (fallback: all 5 tools)"
     elif len(policy.exposed_tools) == 0:
-        tools_display = "()（零工具，只能自然语言回复）"
+        tools_display = "() (no tools; natural-language replies only)"
     else:
         tools_display = ", ".join(policy.exposed_tools)
     lines.append(f"- **[exposed_tools]** {tools_display}")
 
+    if result.route_path == "guardrails":
+        for event in result.memory_events:
+            if event.kind == "guardrail_injection":
+                lines.append(f"- **[matched rule]** `{event.detail}`")
+        tool_count = sum(len(step.invocations) for step in result.steps)
+        lines.append(
+            f"- **[execution]** {len(result.steps)} model calls · {tool_count} tool calls"
+        )
+
+    sys_content = ""
     if policy is not None and policy.fast_path_tool is not None:
         lines.append(
-            f"- **[fast_path]** {policy.fast_path_tool} → 绕过 LLM，无 chat.completions 调用"
+            f"- **[fast_path]** {policy.fast_path_tool} → bypasses the LLM; no chat.completions call"
         )
     elif result.messages and result.messages[0].get("role") == "system":
         sys_content = result.messages[0]["content"]
-        lines.append("- **[system prompt]** 本轮实际送给 LLM 的完整内容：")
-        # 用 code fence **阻止 markdown 解析**——否则 system prompt 里内嵌的
-        # `## 2026-04-23` 会被渲成 h2 巨字，空行会把 blockquote 切断造成远距
-        # 间隙。视觉上的"代码块外观"由 CSS 压平（见 custom_css）。
-        lines.append("```")
-        lines.append(sys_content)
-        lines.append("```")
+        memory_start = sys_content.find("[Long-term memory:")
+        if memory_start != -1:
+            lines.extend([
+                "\n**[loaded memory]** Context included in this turn:",
+                "```text",
+                sys_content[memory_start:],
+                "```",
+            ])
 
     for step in result.steps:
         for inv in step.invocations:
             args = json.dumps(inv.arguments, ensure_ascii=False)
-            lines.append(
-                f"- **[tool]** `{inv.name}({args})` → `{_tool_summary(inv.result)}`"
-            )
+            lines.extend([
+                f"- **[tool]** `{inv.name}({args})`",
+                f"  - Result: `{_tool_summary(inv.result)}`",
+            ])
+
+    if sys_content:
+        lines.extend([
+            "\n<details><summary>[system prompt] Full prompt</summary>\n",
+            "```text",
+            sys_content,
+            "```",
+            "\n</details>",
+        ])
 
     return "\n".join(lines)
 
 
 def format_error_trace(exc: Exception) -> str:
-    """agent 抛异常时降级展示的 trace 片段。"""
+    """Render a fallback trace when the agent raises an exception."""
     return f"- **[error]** `{type(exc).__name__}: {exc}`"
 
 
 def render_trace_log(log: list[str]) -> str:
-    """把累计的 per-turn trace 渲染成一整块 markdown（带 Turn N 分节）。"""
+    """Keep the latest trace open and earlier turns available as disclosures."""
     if not log:
         return EMPTY_TRACE_MD
-    sections = [f"### Turn {i}\n\n{t}" for i, t in enumerate(log, 1)]
+    sections = []
+    for i, trace in enumerate(log, 1):
+        if i == len(log):
+            sections.append(f"### Turn {i}\n\n{trace}")
+        else:
+            sections.append(
+                f"<details><summary>Turn {i} · Previous turn</summary>\n\n"
+                f"{trace}\n\n</details>"
+            )
     return "\n\n---\n\n".join(sections)
 
 
@@ -153,10 +182,10 @@ def respond(
     user_label: str,
     agent: Agent,
 ) -> tuple[str, list[dict], dict, str]:
-    """处理一条用户消息：更新 UI 气泡 + agent history state + 本轮 trace 文本。
+    """Handle a user message, updating visible bubbles, agent history, and the turn trace.
 
-    返回 `(清空输入框, 新 chat_display, 新 state, 本轮 trace_text)`。
-    trace_text 供 UI 层拼到调试面板；空消息时返回空串，调试面板不追加。
+    Return (cleared input, new chat display, new state, trace text).
+    An empty input returns an empty trace so the panel does not append a turn.
     """
     chat_display = chat_display or []
     state = dict(session_state or {})
@@ -172,8 +201,8 @@ def respond(
         final = result.final or FALLBACK_REPLY
         new_agent_history = result.messages
         trace_text = format_turn_trace(result)
-    except Exception as exc:  # noqa: BLE001 — UI 边界兜底，agent 异常不能崩页
-        final = f"[内部异常] {type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001 — Keep agent errors from breaking the UI.
+        final = f"[Internal error] {type(exc).__name__}: {exc}"
         new_agent_history = prev_history
         trace_text = format_error_trace(exc)
 
@@ -190,14 +219,14 @@ def new_conversation(
     session_state: dict | None,
     agent: Agent,
 ) -> tuple[list[dict], dict]:
-    """新对话：把当前 session history 写回长期记忆，清空 UI 与 state。"""
+    """Start a new chat: save current history to long-term memory, then clear UI and state."""
     state = dict(session_state or {})
     uid = state.get("user_id")
     hist = state.get("history")
     if uid and hist:
         agent.save_long_term(uid, hist)
     state["history"] = None
-    # user_id 保留：user 没切换
+    # Preserve user_id because the selected user has not changed.
     return [], state
 
 
@@ -206,7 +235,7 @@ def switch_user(
     session_state: dict | None,
     agent: Agent,
 ) -> tuple[list[dict], dict]:
-    """切换用户：同新对话 + 换 user_id。"""
+    """Switch users: start a new chat and replace user_id."""
     state = dict(session_state or {})
     old_uid = state.get("user_id")
     hist = state.get("history")
@@ -217,7 +246,7 @@ def switch_user(
     return [], state
 
 
-# ---------- Gradio 组装 ----------
+# ---------- Gradio assembly ----------
 
 
 def build_demo(agent: Agent):
@@ -240,40 +269,40 @@ def build_demo(agent: Agent):
         display, state = switch_user(new_label, session_state, agent=agent)
         return display, state, [], render_trace_log([])
 
-    with gr.Blocks(title="NanaShop 客服") as demo:
-        gr.Markdown("## NanaShop 客服\n电商客服多轮对话 Agent")
+    with gr.Blocks(title="NanaShop Support") as demo:
+        gr.Markdown("## NanaShop Support\nMulti-turn e-commerce customer support agent")
 
         session_state = gr.State(value={"history": None, "user_id": "U001"})
         trace_state = gr.State(value=[])
 
         with gr.Row():
             with gr.Column(scale=1, min_width=220):
-                gr.Markdown("### 会话设置")
+                gr.Markdown("### Session settings")
                 user_picker = gr.Radio(
                     choices=[label for label, _ in USERS],
                     value=_DEFAULT_USER_LABEL,
-                    label="当前用户",
+                    label="Current user",
                 )
-                new_btn = gr.Button("新对话", variant="secondary")
+                new_btn = gr.Button("New chat", variant="secondary")
                 show_debug = gr.Checkbox(
-                    label="显示调试轨迹",
+                    label="Show debug trace",
                     value=False,
                 )
 
             with gr.Column(scale=3):
                 chatbot = gr.Chatbot(
                     show_label=False,
-                    height=560,
+                    height=640,
                 )
                 msg_box = gr.Textbox(
-                    placeholder="问点什么？例如：我要退 O001、你们耳机多少钱、转人工……",
+                    placeholder="Ask a question: refund O001, earbud prices, or talk to a human...",
                     show_label=False,
                     submit_btn=True,
                     autofocus=True,
                 )
 
             with gr.Column(scale=2, visible=False, elem_id="trace-col") as trace_col:
-                gr.Markdown("### 调试轨迹（每轮累计）")
+                gr.Markdown("### Debug trace (all turns)")
                 trace_panel = gr.Markdown(
                     value=EMPTY_TRACE_MD,
                     elem_id="trace-panel",
@@ -310,10 +339,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="NanaShop Agent Web UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
-    parser.add_argument("--share", action="store_true", help="开 gradio 公网隧道")
+    parser.add_argument("--share", action="store_true", help="Enable a public Gradio tunnel")
     args = parser.parse_args(argv)
 
-    print("启动前 seed 一次，DB 回到初始态…")
+    print("Seeding the database before startup...")
     seed()
 
     import gradio as gr
@@ -323,12 +352,15 @@ def main(argv: list[str] | None = None) -> int:
     theme = gr.themes.Soft(
         primary_hue="slate",
         radius_size="lg",
+        font=["system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+        font_mono=["ui-monospace", "SFMono-Regular", "monospace"],
     )
-    # Gradio 6 默认底栏有 "通过 API 使用 / 使用 Gradio 构建 / 设置" 三项——
-    # 全都挂在 <footer> 里，一条 CSS 整体隐藏。
-    # trace 面板走柔和底色 + 小字号；代码 / 引用不再额外加视觉框，保持自然。
+    # Gradio 6 puts API access, branding, and settings links in the footer.
+    # Hide that footer with a single CSS rule.
+    # Use a soft background and small type for traces without extra code or quote boxes.
     custom_css = """
 footer { display: none !important; }
+.gradio-container { max-width: 1700px !important; }
 
 #trace-col {
     background: #f7f7f8;
@@ -337,19 +369,21 @@ footer { display: none !important; }
     padding: 12px 16px;
 }
 #trace-panel {
-    font-size: 0.85rem;
+    font-size: 0.95rem;
     line-height: 1.55;
     color: #374151;
-    max-height: 560px;
+    max-height: 640px;
     overflow-y: auto;
 }
 #trace-panel code {
     background: transparent;
     padding: 0;
     font-size: inherit;
+    overflow-wrap: anywhere;
 }
-/* system prompt 走 code fence（防 markdown 解析），CSS 把"代码块"外观压平：
-   无背景、继承字体与字号、保留换行空白、仿 blockquote 左描边。 */
+#trace-panel summary { cursor: pointer; font-weight: 500; padding: 6px 0; }
+/* System prompts use fences to prevent Markdown parsing. Soften code blocks:
+   no background, inherited typography, preserved whitespace, and a left border. */
 #trace-panel pre {
     background: transparent;
     border: none;
@@ -358,6 +392,7 @@ footer { display: none !important; }
     margin: 6px 0;
     color: #4b5563;
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
     font-size: inherit;
     font-family: inherit;
 }
@@ -366,6 +401,8 @@ footer { display: none !important; }
     padding: 0;
     font-size: inherit;
     font-family: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 #trace-panel h3 { font-size: 0.9rem; margin-top: 14px; }
 #trace-panel hr { margin: 12px 0; opacity: 0.4; }
