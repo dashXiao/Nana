@@ -1,7 +1,7 @@
-"""Pytest 全局配置：隔离测试 DB、session 级 seed。
+"""Global pytest setup with a dedicated seeded test database.
 
-在任何 test 模块导入 db 之前，先把 NANA_DB_PATH 指到专用测试 DB，
-避免污染开发库。seed() 每次测试 session 跑一次，写入 2 用户 / 3 商品 / 10 订单。
+Set NANA_DB_PATH before importing database modules to protect the development DB.
+Seed two users, three products, and ten orders once per test session.
 """
 
 from __future__ import annotations
@@ -13,8 +13,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-# 必须在 `from db import ...` 之前设置
+# Set this before importing database modules.
 os.environ["NANA_DB_PATH"] = "db/nana_test.db"
+
+# All model responses are mocked; local tests need no real API credentials.
+os.environ.setdefault("DASHSCOPE_API_KEY", "sk-test-placeholder")
+os.environ.setdefault("DASHSCOPE_BASE_URL", "https://example.invalid/v1")
+os.environ.setdefault("LLM_MODEL", "qwen3.7-plus")
+os.environ.setdefault("LLM_LIGHT_MODEL", "qwen3.8-flash")
+os.environ.setdefault("LLM_ENABLE_THINKING", "false")
+os.environ.setdefault("LLM_MODEL_PRICING", "2.0,8.0")
+os.environ.setdefault("LLM_LIGHT_MODEL_PRICING", "0.8,2.7")
 
 import pytest  # noqa: E402
 
@@ -23,6 +32,6 @@ from scripts.seed import seed  # noqa: E402
 
 @pytest.fixture(scope="session", autouse=True)
 def seeded_db():
-    """整个测试 session 共享一次 seed 后的数据库。"""
+    """Share one seeded database across the test session."""
     seed()
     yield

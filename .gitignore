@@ -33,7 +33,7 @@ db/*.db-journal
 eval/reports/*.json
 eval/reports/*.md
 
-# 会话记忆（本地产生，不入仓）
+# Session memory (generated locally; not committed)
 memory/sessions/
 
 # work-flow

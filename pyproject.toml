@@ -1,7 +1,7 @@
 [project]
 name = "nana-agent"
 version = "0.1.0"
-description = "NanaShop Agent - 电商客服多轮对话 Agent"
+description = "NanaShop Agent - Multi-turn e-commerce customer support agent"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.40.0",
