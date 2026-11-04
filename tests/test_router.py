@@ -1,7 +1,8 @@
-"""IntentRouter 单元测试。
+"""IntentRouter tests using real regex rules and a scripted classifier stub.
 
-规则层走真实正则，LLM 分类层用脚本化 chat_fn 替身——不发真实请求。
-既覆盖成功路径，也覆盖所有能想到的降级路径（格式错 / 网络错 / 低置信度 / 未知标签）。
+Chinese rule fixtures retain multilingual routing coverage.
+No live requests. Cover successful classification and fallbacks for malformed output,
+network errors, low confidence, and unknown labels.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from agent.router import (
 
 
 def _fake_chat(content: str):
-    """返回一个 chat_fn：无论怎么调，都吐出预置 content。"""
+    """Return a chat_fn that always produces the predefined content."""
 
     def _fn(messages, tools=None, **_kwargs):
         return SimpleNamespace(
@@ -36,28 +37,35 @@ def _raising_chat(exc: Exception):
     return _fn
 
 
-# ============ 规则层 ============
+# ============ Rule layer ============
 
 
 def test_rule_matches_escalation_variants():
     router = IntentRouter(chat_fn=_fake_chat(""))
-    for msg in ["转人工", "人工", "转客服", "找真人", "转人工！", "人工?"]:
+    for msg in [
+        "转人工", "人工", "转客服", "找真人", "转人工！", "人工?",
+        "Talk to a human.", "Speak to a person", "human",
+        "TRANSFER ME TO AN AGENT!", "talk to a human agent",
+    ]:
         d = router.classify(msg)
-        assert d.intent == "escalation", f"{msg!r} 应命中 escalation，实际 {d}"
+        assert d.intent == "escalation", f"{msg!r} should match escalation; got {d}"
         assert d.route_path == "rules"
         assert d.confidence == 1.0
 
 
 def test_rule_matches_chitchat_variants():
     router = IntentRouter(chat_fn=_fake_chat(""))
-    for msg in ["你好", "您好", "hi", "Hello", "哈喽", "在吗", "谢谢", "早上好"]:
+    for msg in [
+        "你好", "您好", "hi", "Hello", "哈喽", "在吗", "谢谢", "早上好",
+        "Hey!", "Good morning", "Thank you.",
+    ]:
         d = router.classify(msg)
-        assert d.intent == "chitchat", f"{msg!r} 应命中 chitchat，实际 {d}"
+        assert d.intent == "chitchat", f"{msg!r} should match chitchat; got {d}"
         assert d.route_path == "rules"
 
 
 def test_rule_matches_negative_emotion_variants():
-    """强负面情绪关键词内容匹配即命中，无需整串。"""
+    """Strong negative-emotion keywords match within a message rather than requiring a full match."""
     router = IntentRouter(chat_fn=_fake_chat(""))
     cases = [
         "你们就是骗子！",
@@ -67,30 +75,39 @@ def test_rule_matches_negative_emotion_variants():
         "差评！退款都不给退",
         "滚，别烦我",
         "你们这店简直垃圾",
+        "You are scammers!",
+        "What a garbage store",
+        "I am furious about this order",
+        "I want to file a complaint",
+        "This is a rip-off",
     ]
     for msg in cases:
         d = router.classify(msg)
-        assert d.intent == "negative_emotion", f"{msg!r} 应命中 negative_emotion，实际 {d}"
+        assert d.intent == "negative_emotion", f"{msg!r} should match negative_emotion; got {d}"
         assert d.route_path == "rules"
         assert d.confidence == 1.0
 
 
 def test_rule_escalation_takes_precedence_over_emotion():
-    """'转人工' 整串精确命中优先于情绪模糊匹配——保留 intent 来源语义。"""
+    """Exact handoff requests take precedence over fuzzy emotion matching to retain intent provenance."""
     router = IntentRouter(chat_fn=_fake_chat(""))
     d = router.classify("转人工")
     assert d.intent == "escalation"
 
 
 def test_rule_does_not_greedily_match_compound_input():
-    """整串匹配哨卡：带业务诉求的句子不能被 chitchat/escalation 吞掉。"""
-    # 需要 LLM 返回一个合法结果，否则会降级到 default
+    """Business requests following greetings or handoff words must not be swallowed by anchored rules."""
+    # Return a valid LLM result to avoid fallback to the default path.
     router = IntentRouter(
         chat_fn=_fake_chat('{"intent": "order_query", "confidence": 0.9}')
     )
-    for msg in ["你好我想查 O001", "转人工帮我看下订单", "hello 有货吗"]:
+    for msg in [
+        "你好我想查 O001", "转人工帮我看下订单", "hello 有货吗",
+        "Hello, check O001", "Talk to a human about my order",
+        "Is there an issue with my order?",
+    ]:
         d = router.classify(msg)
-        assert d.route_path != "rules", f"{msg!r} 不应命中规则，实际 {d}"
+        assert d.route_path != "rules", f"{msg!r} should not match a rule; got {d}"
 
 
 def test_empty_input_falls_back_to_default():
@@ -101,36 +118,36 @@ def test_empty_input_falls_back_to_default():
     assert d.intent == "other" and d.route_path == "default"
 
 
-# ============ LLM 分类层 ============
+# ============ LLM classification ============
 
 
 def test_llm_classification_success():
     router = IntentRouter(
         chat_fn=_fake_chat('{"intent": "refund_request", "confidence": 0.88}')
     )
-    d = router.classify("O001 帮我退了")
+    d = router.classify("Please refund O001")
     assert d.intent == "refund_request"
     assert d.route_path == "llm"
     assert d.confidence == 0.88
 
 
 def test_llm_classifies_negative_emotion_when_rules_miss():
-    """规则词表未覆盖的情绪表述，LLM 层仍能归 negative_emotion。"""
+    """The LLM can detect negative emotion absent from the rule vocabulary."""
     router = IntentRouter(
         chat_fn=_fake_chat('{"intent": "negative_emotion", "confidence": 0.92}')
     )
-    d = router.classify("你们的服务实在太让我失望了，不想再说什么了")
+    d = router.classify("Your service has been deeply disappointing. I have nothing more to say.")
     assert d.intent == "negative_emotion"
     assert d.route_path == "llm"
 
 
 def test_llm_low_confidence_degrades_to_default():
-    """即便 LLM 给出了合法 intent，confidence < 阈值也必须降级。"""
+    """A valid intent below the confidence threshold must still fall back."""
     router = IntentRouter(
         chat_fn=_fake_chat('{"intent": "order_query", "confidence": 0.3}'),
         confidence_threshold=0.6,
     )
-    d = router.classify("呃呃呃")
+    d = router.classify("Um, um, um")
     assert d.intent == "other"
     assert d.route_path == "default"
     assert d.confidence == 0.0
@@ -140,30 +157,30 @@ def test_llm_unknown_intent_label_falls_back():
     router = IntentRouter(
         chat_fn=_fake_chat('{"intent": "ufo_sighting", "confidence": 0.95}')
     )
-    d = router.classify("我要退货")
+    d = router.classify("I want to return an item")
     assert d.intent == "other"
     assert d.route_path == "default"
 
 
 def test_llm_malformed_json_falls_back():
     router = IntentRouter(chat_fn=_fake_chat("not-json-at-all{"))
-    d = router.classify("我要退货")
+    d = router.classify("I want to return an item")
     assert d.intent == "other"
     assert d.route_path == "default"
 
 
 def test_llm_markdown_wrapped_json_still_parses():
-    """LLM 偶尔不听话把 JSON 套进 ```json ... ```，容错应拆包裹。"""
+    """Allow classifier JSON wrapped in Markdown code fences."""
     router = IntentRouter(
         chat_fn=_fake_chat('```json\n{"intent": "policy_question", "confidence": 0.9}\n```')
     )
-    d = router.classify("几天能退")
+    d = router.classify("How many days do I have to return it?")
     assert d.intent == "policy_question"
     assert d.route_path == "llm"
 
 
 def test_llm_classifier_uses_light_model():
-    """分类任务应走 LIGHT_MODEL（双模型分层契约，PLAN §9 #11）。"""
+    """Classification must use LIGHT_MODEL under the two-tier model contract."""
     captured: dict = {}
 
     def capturing_chat(messages, tools=None, **kwargs):
@@ -175,62 +192,62 @@ def test_llm_classifier_uses_light_model():
         )
 
     router = IntentRouter(chat_fn=capturing_chat)
-    router.classify("O001 状态")
+    router.classify("O001 status")
     assert captured.get("model") == LIGHT_MODEL
 
 
 def test_llm_raises_exception_degrades_to_default():
-    """网络 / 配额等异常不得抛到调用方。"""
+    """Network or quota errors must not escape to the caller."""
     router = IntentRouter(chat_fn=_raising_chat(RuntimeError("boom")))
-    d = router.classify("随便什么话")
+    d = router.classify("Any message")
     assert d.intent == "other"
     assert d.route_path == "default"
 
 
-# ============ POLICY_MAP 形态断言 ============
+# ============ POLICY_MAP contract ============
 
 
 def test_policy_map_covers_all_valid_intents():
-    """不允许 classify 出的意图在 POLICY_MAP 里查无此值。"""
+    """Every classifiable intent must exist in POLICY_MAP."""
     missing = VALID_INTENTS - set(POLICY_MAP.keys())
-    assert not missing, f"POLICY_MAP 缺意图：{missing}"
+    assert not missing, f"POLICY_MAP is missing intents: {missing}"
 
 
 def test_escalation_policy_is_fast_path():
     p = POLICY_MAP["escalation"]
     assert p.fast_path_tool == "escalate_to_human"
-    assert p.final_template == "已转接人工"
+    assert p.final_template == "Transferred to a human agent."
     assert p.exposed_tools == ()
 
 
 def test_negative_emotion_policy_is_fast_path():
-    """和 escalation 行为同构，intent 独立供 W5 分桶。"""
+    """Negative emotion shares handoff behavior but keeps its own intent for metrics."""
     p = POLICY_MAP["negative_emotion"]
     assert p.fast_path_tool == "escalate_to_human"
-    assert p.final_template == "已转接人工"
+    assert p.final_template == "Transferred to a human agent."
     assert p.exposed_tools == ()
 
 
 def test_chitchat_policy_has_empty_tool_subset():
-    """chitchat 必须暴露零工具——防止 LLM 对打招呼意外调 query_orders。"""
+    """Chitchat must expose no tools to prevent accidental order queries for greetings."""
     p = POLICY_MAP["chitchat"]
     assert p.exposed_tools == ()
     assert p.fast_path_tool is None
-    assert p.prompt_patch  # 非空
+    assert p.prompt_patch  # Nonempty
 
 
 def test_other_policy_is_fallback_all_tools():
-    """other 必须暴露全部工具（用 None 表达），等同未路由时的行为。"""
+    """Other exposes all tools via None, matching unrouted behavior."""
     p = POLICY_MAP["other"]
     assert p.exposed_tools is None
     assert p.fast_path_tool is None
 
 
-# ============ _parse_intent_json 边界 ============
+# ============ _parse_intent_json boundaries ============
 
 
 def test_parse_intent_json_accepts_int_confidence():
-    # 模型可能写成 1 或 0，需要能转 float
+    # Integer confidence values must coerce to float.
     assert _parse_intent_json('{"intent": "chitchat", "confidence": 1}') == ("chitchat", 1.0)
 
 

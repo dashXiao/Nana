@@ -1,4 +1,4 @@
-"""短期记忆 · Summary-Buffer 压缩：超 max_rounds 把早期对话摘成 system，保留末 keep_recent 轮。"""
+"""Short-term summary buffer: compact older turns after max_rounds and keep recent turns."""
 
 from __future__ import annotations
 
@@ -12,12 +12,13 @@ ChatFn = Callable[..., Any]
 
 
 _SUMMARY_SYSTEM = """\
-你是对话历史压缩器。把给定的多轮客服对话片段压成一段极简摘要，
-以便后续轮次仍能理解上下文。要求：
-- 中文、80 字以内
-- 只保留业务事实（用户问过什么、agent 做了什么、调了哪些工具、关键结论）
-- 不编造信息、不加寒暄、不加建议
-- 输出纯文本一段，无 markdown、无前缀"摘要："之类
+Compress the supplied customer support conversation into a very brief summary
+that preserves context for later turns. Requirements:
+- English, at most 40 words.
+- Keep only business facts: user requests, agent actions, tool calls, and key conclusions.
+- Preserve IDs, currencies, and units exactly; never infer a currency or add a currency symbol absent from the dialogue.
+- Do not invent facts or add greetings or advice.
+- Output one plain-text paragraph without Markdown or a prefix such as "Summary:".
 """
 
 
@@ -35,7 +36,7 @@ class ShortTermMemory:
     def maybe_compact(
         self, messages: list[dict], events: list[MemoryEvent],
     ) -> list[dict]:
-        """用户轮数超阈值时压缩早期消息；否则原样（新列表）返回。"""
+        """Compact earlier messages above the turn threshold; otherwise return a shallow copy."""
         user_turns = sum(1 for m in messages if m.get("role") == "user")
         if user_turns <= self._max_rounds:
             return list(messages)
@@ -50,7 +51,7 @@ class ShortTermMemory:
 
         events.append(MemoryEvent(kind="compress", detail=summary))
         return preserved_system + [
-            {"role": "system", "content": f"[早期对话摘要]\n{summary}"}
+            {"role": "system", "content": f"[Earlier conversation summary]\n{summary}"}
         ] + tail
 
     def _summarize(self, dialogue: list[dict]) -> str:
@@ -63,6 +64,6 @@ class ShortTermMemory:
                 tools=None,
                 model=LIGHT_MODEL,
             )
-            return (resp.choices[0].message.content or "").strip() or "（LLM 返回空摘要）"
+            return (resp.choices[0].message.content or "").strip() or "(LLM returned an empty summary)"
         except Exception as exc:  # noqa: BLE001
-            return f"（摘要失败：{type(exc).__name__}）"
+            return f"(Summary failed: {type(exc).__name__})"

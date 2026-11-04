@@ -1,46 +1,50 @@
-# NanaShop 售后与配送政策
+# NanaShop returns and shipping policies
 
-> 本文件为全站统一政策，适用于所有商品。如商品详情页与本文件冲突，以本文件为准。
+> This policy applies to all products. If a product page conflicts with this document, this document takes precedence. These demo policies retain the original China-based shipping and payment terms.
 
-## 1. 退货政策
+## 1. Returns
 
-**退货时效（唯一判据）**：
-- **未发货订单**（`pending`，或 `shipped_at` 为空）：可随时申请退款。
-- **已发货订单**：自**发货之日**起 **7 天内**可申请退货退款；超过 7 天不再支持退货，请联系人工客服走特殊处理。
+**Return window (the sole timing criterion):**
 
-## 2. 配送政策
+- **Unshipped orders** (`pending`, or an empty `shipped_at`): a refund may be requested at any time.
+- **Shipped orders:** returns and refunds may be requested within **7 days of the shipping date**. After 7 days, the standard return process is unavailable; contact a human agent for special handling.
 
-### 2.1 发货时效
-- 现货商品：下单付款后 **48 小时内发货**（节假日顺延）。
-- 预售商品：按详情页标注的发货时间发货。
+## 2. Shipping and delivery
 
-### 2.2 物流时效
-- 国内大部分城市 **2–5 个工作日**送达。
-- 偏远地区（新疆、西藏、青海部分地区）可能需要 **7 天以上**。
-- 大件商品（家具、家电等）由第三方物流承运，时效以物流方为准。
+### 2.1 Dispatch time
 
-### 2.3 地址修改
-- 订单未发货前可联系客服修改；已发货订单无法修改收货地址。
+- In-stock products: ship within **48 hours of payment**, with delays on public holidays.
+- Preorders: ship on the date stated on the product page.
 
-## 3. 退款
+### 2.2 Delivery time
 
-- **退款渠道**：原路返回（原支付账户）。
-- **到账时效**：支付宝/微信 1–3 个工作日；银行卡 3–7 个工作日。
-- 超过上述时效未到账，请联系客服并提供订单号。
+- Most cities in China: **2–5 business days**.
+- Remote areas, including Xinjiang, Tibet, and parts of Qinghai: **7 days or more**.
+- Large items such as furniture and appliances: handled by third-party carriers; delivery time depends on the carrier.
 
-## 4. 常见问题 FAQ
+### 2.3 Address changes
 
-**Q：下单后多久能发货？**
-A：现货 48 小时内发货，预售商品按详情页标注时间。
+- Contact support to change the delivery address before an order ships. The address cannot be changed after shipping.
 
-**Q：发货后多久能收到？**
-A：国内大部分地区 2–5 个工作日，偏远地区更久。
+## 3. Refunds
 
-**Q：发货超过 7 天还能退吗？**
-A：不支持。超过 7 天的订单需联系人工客服走特殊处理，不走标准退货流程。
+- **Payment destination:** the original payment account.
+- **Processing time:** Alipay/WeChat Pay, 1–3 business days; bank cards, 3–7 business days.
+- If the refund has not arrived after that period, contact support with your order ID.
 
-**Q：还没发货想取消怎么办？**
-A：pending 状态的订单可直接申请退款。
+## 4. FAQ
 
-**Q：退款多久到账？**
-A：支付宝/微信 1–3 个工作日，银行卡 3–7 个工作日。
+**Q: How soon will my order ship?**
+A: In-stock products ship within 48 hours. Preorders follow the date stated on the product page.
+
+**Q: How long does delivery take after shipping?**
+A: Most areas in China take 2–5 business days; remote areas take longer.
+
+**Q: Can I return an order more than 7 days after shipping?**
+A: The standard return process is unavailable. Contact a human agent for special handling.
+
+**Q: How do I cancel an order that has not shipped?**
+A: You can request a refund directly for a pending order.
+
+**Q: When will my refund arrive?**
+A: Alipay/WeChat Pay: 1–3 business days. Bank cards: 3–7 business days.

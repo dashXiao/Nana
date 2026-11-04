@@ -1,4 +1,4 @@
-"""ReAct 循环 · 最小骨架。"""
+"""Minimal ReAct loop."""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ from agent.tools._contract import ToolRegistry, ToolSpec
 ChatFn = Callable[..., Any]
 
 _INJECTION_REFUSAL = (
-    "抱歉，我只能帮您处理 NanaShop 的订单、商品、政策等客服问题，"
-    "这类请求我无法处理。"
+    "I can only help with NanaShop orders, products, policies, and other support questions. "
+    "I cannot help with this request."
 )
 
 
 @dataclass
 class ToolInvocation:
-    """一次工具调用的完整快照，便于评测阶段比对预期行为。"""
+    """Complete tool invocation snapshot for evaluation against expected behavior."""
 
     call_id: str
     name: str
@@ -33,7 +33,7 @@ class ToolInvocation:
 
 @dataclass
 class Step:
-    """ReAct 一轮：assistant 输出 + 本轮派发的所有工具调用。"""
+    """One ReAct step: the assistant message and all dispatched tool calls."""
 
     assistant_message: dict
     invocations: list[ToolInvocation] = field(default_factory=list)
@@ -41,7 +41,7 @@ class Step:
 
 @dataclass
 class RunResult:
-    """一次 run() 的终态；final=None 表示达到 max_steps 仍未收敛。"""
+    """Terminal state of run(); final=None means max_steps was reached without a final answer."""
 
     final: str | None
     messages: list[dict]
@@ -53,7 +53,7 @@ class RunResult:
 
 
 class Agent:
-    """最小 ReAct Agent：system prompt + ToolRegistry + 循环调度。"""
+    """Minimal ReAct agent with a system prompt, ToolRegistry, and dispatch loop."""
 
     def __init__(
         self,
@@ -74,8 +74,8 @@ class Agent:
         self._short_term = short_term
         self._long_term = long_term
         self._injection_detector = injection_detector or InjectionDetector()
-        # 长期块会话内缓存：每轮重注入；否则 patch 非空时 _build_initial_messages
-        # 替换 messages[0] 会吞掉首轮嵌入的块。
+        # Cache long-term memory and reinsert it each turn; rebuilding messages[0]
+        # for a new prompt patch would otherwise discard the initial memory block.
         self._lt_cache: dict[str, str] = {}
 
     def run(
@@ -87,11 +87,11 @@ class Agent:
         prompt_patch: str = "",
         memory_block: str = "",
     ) -> RunResult:
-        """执行一次 ReAct 循环。
+        """Run one ReAct loop.
 
-        - exposed_tools: None → 全工具；() → 零工具（chitchat）；具名子集 → 严格暴露
-        - prompt_patch: 非空则覆盖 system 条目（多轮路由各轮意图可能不同）
-        - memory_block: 非空则作为第三段追加到 system（冷启动长期记忆）
+        - exposed_tools: None exposes all tools; () exposes none; a named subset restricts exposure
+        - prompt_patch: a nonempty patch rebuilds the system entry as intent may change each turn
+        - memory_block: append a nonempty block to the system prompt for cold-start long-term memory
         """
         messages = self._build_initial_messages(
             history, user_message, prompt_patch, memory_block
@@ -113,7 +113,7 @@ class Agent:
 
             for tc in msg.tool_calls:
                 args = _parse_arguments(tc.function.arguments)
-                # session 上下文硬覆盖：LLM 无权决定"查谁的"
+                # Override with session context: the LLM cannot choose whose data to access.
                 if user_id is not None:
                     args["user_id"] = user_id
                 result = self.registry.dispatch(tc.function.name, args)
@@ -133,10 +133,10 @@ class Agent:
                     }
                 )
 
-            # 终止型工具：escalate_to_human 命中即硬切，不再让 LLM 继续
+            # Terminal tool: stop immediately after escalate_to_human without another LLM call.
             if any(inv.name == "escalate_to_human" for inv in step.invocations):
                 return RunResult(
-                    final="已转接人工", messages=messages, steps=steps
+                    final="Transferred to a human agent.", messages=messages, steps=steps
                 )
 
         return RunResult(final=None, messages=messages, steps=steps)
@@ -147,10 +147,10 @@ class Agent:
         user_id: str | None = None,
         history: list[dict] | None = None,
     ) -> RunResult:
-        """guardrails → 记忆层 → 路由 → fast_path 或带工具子集的 ReAct。
+        """Run guardrails → memory → routing → fast path or ReAct with a tool subset.
 
-        guardrails 命中即固定拒绝短路；fast_path 直派零参终止工具（当前仅 escalate）。
-        路由元数据与记忆事件回填进 RunResult。
+        A guardrail match returns a fixed refusal; fast_path dispatches a zero-argument terminal tool.
+        Attach routing metadata and memory events to RunResult.
         """
         from agent.router import POLICY_MAP, IntentRouter
 
@@ -204,7 +204,7 @@ class Agent:
     def save_long_term(
         self, user_id: str, messages: list[dict]
     ) -> list[MemoryEvent]:
-        """REPL 在 /reset、/user、/quit 时调用；无 long_term / 空消息则 no-op。"""
+        """Called by the REPL on /reset, /user, or /quit; no-op without long-term memory or messages."""
         if self._long_term is None or not messages:
             return []
         events: list[MemoryEvent] = []
@@ -212,7 +212,7 @@ class Agent:
         self._lt_cache.pop(user_id, None)
         return events
 
-    # ---------- 内部辅助 ----------
+    # ---------- Internal helpers ----------
 
     def _apply_memory_before_run(
         self,
@@ -220,7 +220,7 @@ class Agent:
         user_id: str | None,
         events: list[MemoryEvent],
     ) -> tuple[list[dict] | None, str]:
-        """长期 load（冷启动）/ 取缓存（续轮）→ 短期 compact → 返回给 ReAct。"""
+        """Load long-term memory on cold start or use the cache, then compact short-term history."""
         long_term_block = ""
         if self._long_term is not None and user_id is not None:
             if history is None:
@@ -241,9 +241,9 @@ class Agent:
         prompt_patch: str,
         memory_block: str = "",
     ) -> list[dict]:
-        """构造本轮 messages：base + patch + memory_block 合成 system，再续 history + user。
+        """Build messages: combine base, patch, and memory into system, then append history and user.
 
-        memory_block 作为 system 后缀，避免 patch 非空替换 messages[0] 时把长期记忆覆盖掉。
+        Append memory_block to the system prompt so rebuilding it for a patch preserves memory.
         """
         system_content = self.system_prompt
         if prompt_patch:
@@ -268,10 +268,10 @@ class Agent:
     def _tools_for_exposure(
         self, exposed_tools: tuple[str, ...] | None
     ) -> list[dict]:
-        """根据 exposed_tools 返回要发给 LLM 的 schema 列表。
+        """Return tool schemas to expose to the LLM.
 
-        agent.llm.chat 里 `if tools:` 会把空 list 判定为 falsy → 不传 tools 字段，
-        恰好实现 chitchat "LLM 看不到任何工具" 的效果。
+        agent.llm.chat omits the tools field for an empty list,
+        so the model sees no tools for chitchat.
         """
         if exposed_tools is None:
             return self.registry.openai_tools()
@@ -291,8 +291,8 @@ class Agent:
         policy: Any,
         memory_block: str = "",
     ) -> RunResult:
-        """绕过 LLM 直接派发零参数终止工具，但仍构造完整的 tool_call/tool 消息对，
-        让 messages 形态与正常 ReAct 一致——下游 history/评测不需要特判。
+        """Dispatch a zero-argument terminal tool without an LLM call.
+        Preserve the normal tool_call/tool message pair for history and evaluation.
         """
         messages = self._build_initial_messages(
             history, user_message, "", memory_block
@@ -340,7 +340,7 @@ class Agent:
 
 
 def _parse_arguments(raw: str | dict) -> dict:
-    """把 tool_call.arguments（通常是 JSON 字符串）安全地解析为 dict。"""
+    """Safely parse tool_call.arguments, usually a JSON string, into a dict."""
     if isinstance(raw, dict):
         return dict(raw)
     if not raw:

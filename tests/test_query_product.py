@@ -1,14 +1,6 @@
-"""query_product 工具单元测试。
-
-覆盖：
-- 单 ID / 多 ID 基本路径
-- 输入顺序保留（对比场景"A 和 B 哪个好"需要）
-- 去重
-- 部分 ID 不存在 → products + missing 并存
-- 全部 ID 不存在 → products=[]，missing 全部
-- 空 list / 缺 product_ids → INVALID_INPUT
-- md frontmatter 被剥掉，不与 DB 字段重复
-- OpenAI schema 不变式
+"""query_product tests covering single and multiple IDs, stable input ordering,
+deduplication, missing IDs, empty or missing inputs, frontmatter stripping,
+and the OpenAI tool schema.
 """
 
 from __future__ import annotations
@@ -25,15 +17,15 @@ def test_single_id_returns_db_plus_description():
     assert len(data["products"]) == 1
     p = data["products"][0]
     assert p["product_id"] == "P001"
-    assert p["name"] == "无线蓝牙耳机 X1"
+    assert p["name"] == "X1 Wireless Earbuds"
     assert p["price"] == 299.0
     assert p["stock"] == 50
     assert isinstance(p["description"], str)
-    assert "产品描述" in p["description"]
+    assert "Description" in p["description"]
 
 
 def test_multi_ids_preserve_order():
-    """["P002","P001"] 必须按此顺序返回，对比场景需要。"""
+    """Return P002 and P001 in the requested order for comparisons."""
     result = QUERY_PRODUCT_SPEC.invoke({"product_ids": ["P002", "P001"]})
     assert result["ok"] is True
     ids = [p["product_id"] for p in result["data"]["products"]]
@@ -63,7 +55,7 @@ def test_all_missing_returns_empty_products():
 
 
 def test_empty_list_is_invalid_input():
-    """min_length=1 由 Pydantic 拦住——空 list 对工具无意义。"""
+    """Pydantic min_length=1 rejects an empty product list."""
     result = QUERY_PRODUCT_SPEC.invoke({"product_ids": []})
     assert result["ok"] is False
     assert result["error_code"] == ErrorCode.INVALID_INPUT
@@ -76,13 +68,13 @@ def test_missing_product_ids_is_invalid_input():
 
 
 def test_description_strips_frontmatter():
-    """md 开头的 --- yaml --- 块应被剥掉，不重复暴露 product_id/name。"""
+    """Strip YAML frontmatter so product_id and name are not repeated in the description."""
     result = QUERY_PRODUCT_SPEC.invoke({"product_ids": ["P001"]})
     desc = result["data"]["products"][0]["description"]
     assert not desc.startswith("---")
-    # frontmatter 字段不在描述正文里
+    # Frontmatter fields are absent from the description body.
     assert "product_id: P001" not in desc
-    # 但描述正文的 markdown 标题还在
+    # Markdown section headings remain in the description.
     assert desc.lstrip().startswith("##")
 
 

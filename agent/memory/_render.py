@@ -1,4 +1,4 @@
-"""共享：把 messages 序列拍扁成文本喂给摘要 LLM。短/长期共用同一种形态。"""
+"""Shared renderer: flatten messages into text for short- and long-term summarization."""
 
 from __future__ import annotations
 

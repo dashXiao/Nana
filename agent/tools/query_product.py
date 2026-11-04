@@ -1,4 +1,4 @@
-"""query_product · 按 product_ids 批量返回商品（DB 字段 + md 完整描述 + missing 列表）。"""
+"""query_product: batch retrieval by product_ids, including DB fields, full descriptions, and missing IDs."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ _PRODUCTS_DIR = Path(__file__).resolve().parent.parent.parent / "knowledge" / "p
 class QueryProductInput(BaseModel):
     product_ids: list[str] = Field(
         min_length=1,
-        description="要查询的商品 ID 列表，例如 ['P001','P002']。支持一次传多个便于对比。",
+        description="Product IDs to retrieve, such as ['P001', 'P002']; pass multiple IDs for comparison.",
     )
 
 
 def _strip_frontmatter(md: str) -> str:
-    """剥掉 md 文件头部的 YAML frontmatter（`---` 包围块），避免与结构化字段重复。"""
+    """Strip YAML frontmatter delimited by --- to avoid duplicating structured fields."""
     if not md.startswith("---\n"):
         return md
     end = md.find("\n---\n", 4)
@@ -31,7 +31,7 @@ def _strip_frontmatter(md: str) -> str:
 
 
 def _read_description(product_id: str) -> str | None:
-    """返回商品 md 正文；文件缺失时 None（DB 有但 md 无属数据不一致，不静默隐藏）。"""
+    """Return the product Markdown body, or None to expose a missing description file."""
     path = _PRODUCTS_DIR / f"{product_id}.md"
     if not path.exists():
         return None
@@ -39,7 +39,7 @@ def _read_description(product_id: str) -> str | None:
 
 
 def query_product_handler(args: QueryProductInput) -> dict:
-    """去重保序 → 批量查 DB → 逐个拼接 md 描述。"""
+    """Deduplicate in input order, query the DB in a batch, then attach Markdown descriptions."""
     seen: set[str] = set()
     ordered: list[str] = []
     for pid in args.product_ids:
@@ -80,8 +80,8 @@ def query_product_handler(args: QueryProductInput) -> dict:
 QUERY_PRODUCT_SPEC = ToolSpec(
     name="query_product",
     description=(
-        "按商品 ID 批量查询商品详情，返回价格、库存和完整介绍。"
-        "支持一次传多个 ID 做对比。"
+        "Retrieve product details by ID, including prices in CNY, stock, and full descriptions. "
+        "Pass multiple IDs for comparison."
     ),
     input_model=QueryProductInput,
     handler=query_product_handler,

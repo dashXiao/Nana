@@ -1,4 +1,4 @@
-"""query_orders 工具单元测试。"""
+"""Unit tests for the query_orders tool."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from agent.tools.query_orders import QUERY_ORDERS_SPEC
 
 
 def test_u001_returns_all_orders():
-    """U001 应返回 5 条订单，且按 created_at 倒序。"""
+    """U001 has five orders returned in descending created_at order."""
     result = QUERY_ORDERS_SPEC.invoke({"user_id": "U001"})
     assert result["ok"] is True
     data = result["data"]
     assert data["count"] == 5
     ids = [o["order_id"] for o in data["orders"]]
     assert set(ids) == {"O001", "O003", "O005", "O007", "O009"}
-    # 倒序校验
+    # Verify descending order.
     times = [o["created_at"] for o in data["orders"]]
     assert times == sorted(times, reverse=True)
 
@@ -29,7 +29,7 @@ def test_u002_returns_all_orders():
 
 
 def test_each_order_includes_product_name_and_days_shipped():
-    """字段契约：每条订单都有 product_name 和 days_since_shipped 字段。"""
+    """Each order includes product_name and days_since_shipped."""
     result = QUERY_ORDERS_SPEC.invoke({"user_id": "U001"})
     assert result["ok"] is True
     for o in result["data"]["orders"]:
@@ -56,7 +56,7 @@ def test_invalid_json_string_arg():
 
 
 def test_anomaly_O008_shipped_days():
-    """异常订单 O008：已发货 12 天仍 shipped，days_since_shipped 应 ≥ 11。"""
+    """O008 has been shipped for 12 days; days_since_shipped must be at least 11."""
     result = QUERY_ORDERS_SPEC.invoke({"user_id": "U002"})
     o008 = next(o for o in result["data"]["orders"] if o["order_id"] == "O008")
     assert o008["status"] == "shipped"
@@ -64,7 +64,7 @@ def test_anomaly_O008_shipped_days():
 
 
 def test_anomaly_O009_delivered_without_shipped_at():
-    """异常订单 O009：status=delivered 但 shipped_at=None。"""
+    """O009 is delivered but has shipped_at=None."""
     result = QUERY_ORDERS_SPEC.invoke({"user_id": "U001"})
     o009 = next(o for o in result["data"]["orders"] if o["order_id"] == "O009")
     assert o009["status"] == "delivered"
@@ -73,7 +73,7 @@ def test_anomaly_O009_delivered_without_shipped_at():
 
 
 def test_anomaly_O010_long_pending():
-    """异常订单 O010：下单 20 天仍 pending，由 Agent 判定是否异常。"""
+    """O010 has been pending for 20 days; the agent decides whether that is abnormal."""
     result = QUERY_ORDERS_SPEC.invoke({"user_id": "U002"})
     o010 = next(o for o in result["data"]["orders"] if o["order_id"] == "O010")
     assert o010["status"] == "pending"
@@ -81,7 +81,7 @@ def test_anomaly_O010_long_pending():
 
 
 def test_openai_schema_has_only_user_id():
-    """关键设计不变性：入参只含 user_id，不得再有 order_id。"""
+    """The tool accepts only user_id, never order_id."""
     schema = QUERY_ORDERS_SPEC.to_openai()
     assert schema["type"] == "function"
     assert schema["function"]["name"] == "query_orders"

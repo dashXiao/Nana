@@ -1,7 +1,7 @@
-"""记忆事件 · 可观测性数据结构。
+"""Memory events for observability.
 
-短/长期记忆的每个动作都生成一条 `MemoryEvent`，随 `RunResult.memory_events`
-回传——与 `route_path/confidence` 同构：数据回传而不是副作用回调。
+Each short- or long-term memory action emits a MemoryEvent in RunResult.memory_events.
+Like route_path and confidence, events are returned as data rather than side-effect callbacks.
 """
 
 from __future__ import annotations
@@ -12,4 +12,4 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class MemoryEvent:
     kind: str       # "compress" | "load_long_term" | "save_long_term"
-    detail: str     # compress 事件的 detail 含完整摘要文本，便于 REPL 观察质量
+    detail: str     # Compression detail includes the full summary for inspection in the REPL.

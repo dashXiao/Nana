@@ -1,5 +1,5 @@
 -- NanaShop Agent · SQLite schema
--- 极简三表：users / products / orders
+-- Three minimal tables: users / products / orders
 
 DROP TABLE IF EXISTS orders;
 DROP TABLE IF EXISTS products;
@@ -17,8 +17,8 @@ CREATE TABLE products (
     stock      INTEGER NOT NULL CHECK (stock >= 0)
 );
 
--- status 枚举：pending / shipped / delivered / refunded
--- shipped_at 仅在 status >= shipped 时非空；具体由工具层现算 days_since_shipped
+-- Status values: pending / shipped / delivered / refunded
+-- shipped_at is populated after shipping; tools compute days_since_shipped at query time.
 CREATE TABLE orders (
     order_id   TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(user_id),

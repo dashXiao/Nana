@@ -1,4 +1,4 @@
-"""长期记忆 · 用户级 append-only markdown：每段 `## YYYY-MM-DD HH:MM` 一次会话摘要。"""
+"""Long-term memory: append-only per-user Markdown with timestamped session summaries."""
 
 from __future__ import annotations
 
@@ -18,12 +18,14 @@ _SECTION_HEADER_RE = re.compile(r"^## ", re.MULTILINE)
 
 
 _SUMMARY_SYSTEM = """\
-你是跨会话记忆摘要器。把一次客服会话压成一段极简摘要，用于下次该用户再访问时加载。
-要求：
-- 中文、120 字以内
-- 只保留对"下次对话有用"的事实：用户关心过什么订单 / 商品，做过什么决定，有什么未决事项
-- 不编造、不加寒暄、不加建议、不包含敏感隐私
-- 输出纯文本一段，无 markdown、无前缀
+Summarize a customer support session into a very brief memory for the user's next visit.
+Requirements:
+- English, at most 60 words.
+- Keep only facts useful next time: relevant orders or products, decisions, and unresolved issues.
+- Focus on the user's questions and decisions. Do not retain catalog prices or stock counts; look them up again next session.
+- Preserve IDs, currencies, and units exactly. Never infer a currency or add a currency symbol absent from the dialogue.
+- Do not invent facts, add greetings or advice, or include sensitive personal information.
+- Output one plain-text paragraph without Markdown or a prefix.
 """
 
 
@@ -41,23 +43,23 @@ class LongTermMemory:
         self._recent = recent_sections
 
     def load_block(self, user_id: str, events: list[MemoryEvent]) -> str:
-        """读取该用户最近 N 段摘要，拼成可直接嵌入 system 的 markdown 块。"""
+        """Load the latest N user summaries as a Markdown block for the system prompt."""
         path = self._path_for(user_id)
         if not path.exists():
-            events.append(MemoryEvent("load_long_term", "首次对话，无历史记忆"))
+            events.append(MemoryEvent("load_long_term", "First conversation; no saved memory"))
             return ""
 
         sections = _split_sections(path.read_text(encoding="utf-8"))
         if not sections:
-            events.append(MemoryEvent("load_long_term", "首次对话，无历史记忆"))
+            events.append(MemoryEvent("load_long_term", "First conversation; no saved memory"))
             return ""
 
         recent = sections[-self._recent :]
         events.append(MemoryEvent(
             "load_long_term",
-            f"载入 {len(recent)} 段（文件共 {len(sections)} 段）",
+            f"Session summaries loaded: {len(recent)} (available: {len(sections)})",
         ))
-        return "[长期记忆 · 最近 {} 次会话摘要]\n{}".format(
+        return "[Long-term memory: recent session summaries (count: {})]\n{}".format(
             len(recent), "\n".join(recent)
         )
 
@@ -68,18 +70,18 @@ class LongTermMemory:
         events: list[MemoryEvent],
         now: datetime | None = None,
     ) -> None:
-        """对本会话做摘要并追加到用户文件。轮数 < min_turns 或摘要为空则跳过。"""
+        """Summarize and append this session; skip short sessions or empty summaries."""
         user_turns = sum(1 for m in messages if m.get("role") == "user")
         if user_turns < self._min_turns:
             events.append(MemoryEvent(
                 "save_long_term",
-                f"turns={user_turns} < min_turns={self._min_turns}，跳过",
+                f"turns={user_turns} < min_turns={self._min_turns}; skipped",
             ))
             return
 
         summary = self._summarize(messages)
         if not summary:
-            events.append(MemoryEvent("save_long_term", "摘要为空，跳过"))
+            events.append(MemoryEvent("save_long_term", "Empty summary; skipped"))
             return
 
         ts = (now or datetime.now()).strftime("%Y-%m-%d %H:%M")
@@ -94,7 +96,7 @@ class LongTermMemory:
 
         events.append(MemoryEvent(
             "save_long_term",
-            f"写入 1 段（turns={user_turns}）：{summary}",
+            f"Saved 1 section (turns={user_turns}): {summary}",
         ))
 
     def _path_for(self, user_id: str) -> Path:
@@ -115,7 +117,7 @@ class LongTermMemory:
             )
             return (resp.choices[0].message.content or "").strip()
         except Exception as exc:  # noqa: BLE001
-            return f"（本会话摘要失败：{type(exc).__name__}）"
+            return f"(Session summary failed: {type(exc).__name__})"
 
 
 def _split_sections(text: str) -> list[str]:

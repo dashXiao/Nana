@@ -1,4 +1,4 @@
-"""NanaShop SQLite 种子数据脚本：重置 schema → 写入固定数据。"""
+"""Seed NanaShop SQLite: reset the schema and insert deterministic data."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from scripts.seed_data import PRODUCTS, USERS, build_orders  # noqa: E402
 
 
 def seed() -> None:
-    """入口：重置 schema → 写入  用户 / 商品 / 订单，并打印摘要。"""
+    """Reset the schema, insert users/products/orders, and print a summary."""
     print("· resetting schema...")
     init_schema(drop_existing=True)
 

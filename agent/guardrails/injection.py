@@ -1,4 +1,4 @@
-"""Prompt 注入检测 · 规则黑名单：role_hijack / prompt_leak / jailbreak 三类。"""
+"""Rule-based prompt injection detection: role_hijack, prompt_leak, and jailbreak."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ _ROLE_HIJACK = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# 中文常用倒装"你的 prompt 给我看看"，正序倒序两支都覆盖
+# Keep Chinese detection terms; support both verb-first and object-first prompt-leak requests.
 _PROMPT_LEAK = re.compile(
     r"(?:"
     r"(?:告诉|输出|显示|打印|给我看|show|reveal|print|repeat|output)"
@@ -38,7 +38,7 @@ _JAILBREAK_TOKENS = re.compile(
 
 
 class InjectionDetector:
-    """detect(msg) 返回命中的模式名 ('role_hijack'/'prompt_leak'/'jailbreak') 或 None。"""
+    """Return the matched pattern name (role_hijack/prompt_leak/jailbreak), or None."""
 
     def detect(self, msg: str) -> str | None:
         text = msg or ""
