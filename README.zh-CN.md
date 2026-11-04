@@ -1,0 +1,107 @@
+# NanaShop Agent
+
+[English](README.md) | 简体中文
+
+电商客服 Nana · 自研 ReAct 循环 + 双模型分层 + 两层记忆 + 多层防御。
+
+## 项目特色
+#### 意图路由
+将用户意图分为 7 类，按意图为 Agent 注入定制 prompt patch + 收窄可见工具集，避免在"全规则 + 全工具"下误调或漏调。
+
+#### 两层记忆
+短期记忆：自动压缩对话，避免上下文过长。  
+长期记忆：对话结束后，将对话摘要保存至磁盘，并在下次对话开场时加载，保障跨会话记忆。
+
+#### 检索
+轻量按需加载：Agent 按 Prompt 中的商品 Id 信息直接查找对应商品描述文件，避免RAG向量搜索，满足大部分电商客服场景。  
+简化更新：可直接通过修改商品描述文件更新信息，无需重新训练。
+
+#### 两层防注入
+入口处：正则黑名单，匹配到则拦截。  
+路由层：System Prompt中的防注入提示 + 工具处用户id校验，进一步拦截非法意图。
+
+## 快速开始
+
+见 [docs/quick-start.md](docs/quick-start.md)
+
+## 项目架构
+
+![架构图](docs/architecture.png)
+
+## 主要目录结构
+
+```
+nana/
+├─ agent/                  # Agent 核心
+│  ├─ core.py              #   ReAct 主循环
+│  ├─ llm.py               #   双模型客户端
+│  ├─ router.py            #   意图路由
+│  ├─ guardrails/          #   入口防御
+│  ├─ memory/              #   记忆处理
+│  └─ tools/               #   工具
+├─ knowledge/              # 商品 / 政策知识
+├─ db/                     # SQLite 数据层
+├─ memory/sessions/        # 长期记忆
+├─ scripts/
+│  ├─ webui.py             #   Web UI
+│  ├─ chat.py              #   命令行 REPL
+│  ├─ seed.py              #   数据初始化
+│  ├─ seed_data.py         #   种子数据
+│  └─ smoke_*.py           #   冒烟脚本
+├─ eval/                   # 评测体系
+├─ tests/                  # 测试
+└─ docs/                   # 相关文档
+```
+
+## 使用展示
+#### 咨询商品
+![](docs/商品查询.png)
+
+#### 长期记忆
+![](docs/长期记忆.png)
+
+#### 防注入护栏
+![](docs/防注入.png)
+
+#### 退货
+依次查询订单信息与退货政策，拒绝退货
+![](docs/退货.png)
+
+## 评测
+
+### Overall Metrics
+
+| Category      | Metric                            | Value |
+|---------------|-----------------------------------|------|
+| **Auto**      | Pass Rate (pass / total)          | **36 / 42 (86%)** |
+|               | Intent Accuracy                   | 86% |
+|               | Tool Call (strict / set)          | 90% / 95% |
+|               | Forbidden-Phrase Cleanliness      | 98% |
+|               | Avg Latency (s)                   | 4.04 |
+|               | Total Tokens (qwen-plus)          | 108K |
+|               | Total Cost (¥)                    | 0.41 |
+| **LLM Judge** | Faithfulness (1-5)                | 4.76 |
+|               | Helpfulness (1-5)                 | 4.74 |
+|               | Safety & Tone (1-5)               | 4.90 |
+| **Red Team**  | Overall Block Rate (blocked / 15) | **14 / 15 (93%)** |
+
+
+### 消融实验
+对比（1）使用单一模型（全用主模型） （2）无意图识别（system prompt, tools 全量加载）  
+量化模型分层与意图识别的贡献
+
+| Config            | Pass            | Intent Acc | Tokens       | Cost (¥)     | Faith | Help | Tone |
+|-------------------|-----------------|------------|--------------|--------------|-------|------|------|
+| Baseline          | 35 / 42 (83%)   | 83%        | 111K         | 0.42         | 4.76  | 4.62 | 4.90 |
+| Single Model      | 36 / 42 (86%)   | 88%        | 121K (+9%)   | 0.53 (+26%)  | 4.88  | 4.83 | 4.95 |
+| No Intent Routing |                 |            | 157K (+42%)  | 0.68 (+61%)  | 4.81  | 4.74 | 4.88 |
+
+
+### 防注入拦截
+两层拦截
+- `guardrails`：入口处，正则关键词匹配命中
+- `downstream`：规则层漏召回 → 下游 system prompt 兜底
+
+| Samples | guardrails | downstream | bypassed | Block Rate |
+|---------|------------|------------|----------|------------|
+| 30      | 14         | 13         | 3        | 90.0%      |
