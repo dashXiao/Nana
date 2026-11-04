@@ -1,8 +1,8 @@
-"""E2 自动指标 harness：跑评测集 → 采集确定性指标（intent/tool/phrase/latency/tokens）→ 报表。
+"""E2 evaluation harness: run datasets and report intent, tool, phrase, latency, and token metrics.
 
 CLI:
-    uv run python -m eval.harness                 # dry-run
-    uv run python -m eval.harness --run           # 全量
+    uv run python -m eval.harness                 # dry run
+    uv run python -m eval.harness --run           # full run
     uv run python -m eval.harness --run --scenarios refund_flow
     uv run python -m eval.harness --run --ids refund-01 --out /tmp/r.json
 """
@@ -41,12 +41,11 @@ from scripts.seed import seed as _seed_db
 
 
 def _reseed_db_silently() -> None:
-    """样本间硬重置 SQLite 到种子态：避免 refund 类样本互相污染。
-    seed() 会打印摘要，这里吞掉 stdout 让 harness 输出保持整洁。"""
+    """Reset SQLite to seeded state between samples, suppressing seed output to keep reports readable."""
     with contextlib.redirect_stdout(io.StringIO()):
         _seed_db()
 
-# 计价 (¥/M tokens, input/output)：从 .env 读，换模型只改 .env
+# Pricing (CNY per million input/output tokens) is configured in .env.
 def _parse_pricing(env_var: str) -> tuple[float, float]:
     raw = os.getenv(env_var, "")
     parts = raw.split(",")
@@ -59,7 +58,7 @@ _PRICING_PER_1M: dict[str, tuple[float, float]] = {
 }
 
 
-# ---------- 指标数据结构 ----------
+# ---------- Metric data structures ----------
 
 
 @dataclass
@@ -81,13 +80,13 @@ class TokenUsage:
 
 @dataclass
 class SampleResult:
-    """单条样本跑完后的完整快照。"""
+    """Complete snapshot after one sample finishes."""
 
     sample_id: str
     scenario: str
     turns_count: int
 
-    # 路由与工具观测
+    # Observed routing and tool calls
     intent_expected: str
     intent_observed: str
     intent_match: bool
@@ -95,30 +94,30 @@ class SampleResult:
     tools_expected: tuple[str, ...]
     tools_forbidden: tuple[str, ...]
     tools_observed: tuple[str, ...]
-    tools_expected_ok: bool      # expected 是否全部出现（set-wise）
-    tools_ordered_ok: bool       # 观测序列是否严格等于 expected 序列
-    tools_forbidden_ok: bool     # forbidden 是否无一出现
+    tools_expected_ok: bool      # All expected tools appeared (set-wise).
+    tools_ordered_ok: bool       # The observed sequence exactly matches the expected sequence.
+    tools_forbidden_ok: bool     # No forbidden tools appeared.
 
-    # 答复与短语命中
+    # Answer and phrase matches
     final_answer: str
     phrases_expected_missing: tuple[str, ...]
     phrases_forbidden_hit: tuple[str, ...]
     phrases_expected_ok: bool
     phrases_forbidden_ok: bool
 
-    # 工程指标
+    # Operational metrics
     latency_s: float
     tokens_by_model: dict[str, TokenUsage]
 
-    # 错误兜底：异常发生时填，其他字段尽量填可读默认
+    # Capture exceptions here; use readable defaults for the other fields.
     error: str | None = None
 
-    # 完整工具调用流水：E3 Judge 判 faithfulness 时作为"agent 可见证据"
+    # Full tool trace serves as agent-visible evidence for the E3 faithfulness judge.
     tool_calls: tuple[dict, ...] = ()
 
     @property
     def passed(self) -> bool:
-        """样本级 pass 判定：路由对 + 工具覆盖对 + 禁用工具干净 + 短语两侧干净 + 无异常。"""
+        """Pass requires matching intent, tool coverage, no forbidden tools or phrases, and no errors."""
         return (
             self.error is None
             and self.intent_match
@@ -129,19 +128,19 @@ class SampleResult:
         )
 
 
-# ---------- Agent / chat 装配 ----------
+# ---------- Agent / chat assembly ----------
 
 
 def _make_capturing_chat(
     usage_by_model: dict[str, TokenUsage],
     force_model: str | None = None,
 ):
-    """包装 agent.llm.chat：保持行为不变，只把 response.usage 按 model 累加到字典。
+    """Wrap agent.llm.chat and accumulate response.usage by model without changing behavior.
 
-    `force_model` 不为 None 时，覆盖所有下游调用方传入的 model——E4 消融里用来把
-    "分类/压缩/摘要"这些本来走 LIGHT_MODEL 的调用强制拉到主模型，复现"全主模型"配置。
+    force_model overrides every downstream model choice, allowing E4 to run classification,
+    compression, and summarization on the main model for the single-model ablation.
     """
-    from agent.llm import chat as real_chat  # 延迟 import，避免环境变量未就绪报错
+    from agent.llm import chat as real_chat  # Import lazily so environment variables can be configured first.
 
     def wrapped(messages, tools=None, model=None, **kwargs):
         effective_model = force_model or model or MODEL
@@ -162,14 +161,13 @@ def _make_capturing_chat(
 
 
 class _ForcedOtherRouter(IntentRouter):
-    """E4 消融专用：跳过分类层，始终返回 intent="other"。
+    """E4 ablation router: skip classification and always return intent="other".
 
-    用于"按需加载消融"——让 agent 每轮都看 `other` patch 的全量通用规则 + 全 5 工具，
-    消掉路由的意图裁剪收益，对比 baseline 体现"路由按需收窄"的 token / 成本差。
-    `route_path="forced"` 便于报表一眼看到"这是消融配置"。
+    Expose all five tools and the full fallback patch on every turn to measure the token
+    and cost impact of intent-specific loading. route_path="forced" marks this configuration.
     """
 
-    def classify(self, msg: str) -> IntentDecision:  # noqa: ARG002 — msg 故意不看
+    def classify(self, msg: str) -> IntentDecision:  # noqa: ARG002 — Intentionally ignore the message.
         return IntentDecision("other", 1.0, "forced")
 
 
@@ -179,11 +177,9 @@ def build_agent(
     force_model: str | None = None,
     force_intent_other: bool = False,
 ) -> Agent:
-    """装配评测用 Agent：5 工具 + 路由 + 双记忆 + 注入闸 + 捕获用量的 chat。
-
-    - `force_model`：所有 chat 调用一律走这个 model（E4 "全 plus" 消融）。
-    - `force_intent_other`：用 `_ForcedOtherRouter` 代替真路由（E4 "无按需加载" 消融）。
-    默认参数下行为与 baseline 完全一致。
+    """Build an evaluation agent with five tools, routing, both memory layers, injection filtering,
+    and usage tracking. force_model selects one model for all calls; force_intent_other
+    replaces the router for the full-context ablation. Defaults reproduce baseline behavior.
     """
     chat_fn = _make_capturing_chat(usage_by_model, force_model=force_model)
     registry = ToolRegistry([
@@ -209,7 +205,7 @@ def build_agent(
 
 
 def _seed_long_term(memory_dir: Path, user_id: str, blocks: tuple[str, ...]) -> None:
-    """把样本的 long_term_blocks 写入临时 memory 文件，格式对齐 LongTermMemory.save_session。"""
+    """Write sample memory blocks to temporary files using the LongTermMemory session format."""
     memory_dir.mkdir(parents=True, exist_ok=True)
     path = memory_dir / f"{user_id}.md"
     body = "\n".join(b.strip() for b in blocks)
@@ -225,7 +221,7 @@ def _clear_long_term(memory_dir: Path, user_id: str) -> None:
         path.unlink()
 
 
-# ---------- 打分 ----------
+# ---------- Scoring ----------
 
 
 def _score_tools(
@@ -244,8 +240,10 @@ def _score_tools(
 def _score_phrases(
     sample: Sample, final_answer: str
 ) -> tuple[tuple[str, ...], tuple[str, ...], bool, bool]:
-    missing = tuple(p for p in sample.expected_phrases if p not in final_answer)
-    hit = tuple(p for p in sample.forbidden_phrases if p in final_answer)
+    # Ignore English capitalization while retaining original phrases in reports.
+    answer = final_answer.casefold()
+    missing = tuple(p for p in sample.expected_phrases if p.casefold() not in answer)
+    hit = tuple(p for p in sample.forbidden_phrases if p.casefold() in answer)
     return missing, hit, not missing, not hit
 
 
@@ -260,7 +258,7 @@ def score_run(
     tool_calls: tuple[dict, ...] = (),
     error: str | None = None,
 ) -> SampleResult:
-    """把一次 run 的观测聚合成 SampleResult；纯函数，便于单测。"""
+    """Aggregate observations into SampleResult; a pure function for unit testing."""
     expected_ok, ordered_ok, forbidden_ok = _score_tools(sample, observed_tools)
     missing, hit, phrases_exp_ok, phrases_forb_ok = _score_phrases(sample, final_answer)
     return SampleResult(
@@ -289,18 +287,18 @@ def score_run(
     )
 
 
-# ---------- 跑样本 ----------
+# ---------- Sample execution ----------
 
 
 def run_sample(sample: Sample, agent: Agent, memory_dir: Path) -> SampleResult:
-    """跑单条样本：铺 preconditions → 多轮跑 → 聚合 → 清理。"""
+    """Run one sample: prepare preconditions, execute turns, aggregate results, and clean up."""
     blocks = sample.preconditions.long_term_blocks
     if blocks:
         _seed_long_term(memory_dir, sample.user_id, blocks)
     else:
         _clear_long_term(memory_dir, sample.user_id)
 
-    # tokens 分摊由 run_all 在样本前后 snapshot/diff 后回填到 result.tokens_by_model
+    # run_all fills tokens_by_model using usage snapshots before and after each sample.
     error: str | None = None
     history: list[dict] | None = None
     observed_tools: list[str] = []
@@ -327,7 +325,7 @@ def run_sample(sample: Sample, agent: Agent, memory_dir: Path) -> SampleResult:
             if result.final is not None:
                 final_answer = result.final
             history = result.messages
-    except Exception as exc:  # noqa: BLE001 — harness 边界兜底
+    except Exception as exc:  # noqa: BLE001 — Harness boundary error handling.
         error = f"{type(exc).__name__}: {exc}"
     latency_s = time.perf_counter() - start
 
@@ -351,10 +349,10 @@ def run_all(
     samples: list[Sample],
     build_kwargs: dict[str, Any] | None = None,
 ) -> list[SampleResult]:
-    """串行跑全部样本。每样本独立 diff 出本轮的 tokens 用量。
+    """Run samples serially, attributing token usage with per-sample snapshots.
 
-    `build_kwargs` 透传给 `build_agent`，用来跑 E4 消融配置（force_model / force_intent_other）。
-    默认 None → baseline 行为不变。
+    Pass build_kwargs to build_agent for force_model and force_intent_other ablations.
+    None preserves baseline behavior.
     """
     results: list[SampleResult] = []
     build_kwargs = build_kwargs or {}
@@ -368,13 +366,13 @@ def run_all(
         )
 
         for sample in samples:
-            # 每条样本前重置 DB 到种子态；否则 refund-02 退掉 O003 后，
-            # refund-05 再点 O003 就只能看到 refunded。样本应彼此独立。
+            # Reseed before each sample so a refund of O003 in refund-02
+            # does not change what refund-05 observes. Samples must remain independent.
             _reseed_db_silently()
             before = {m: TokenUsage(**dataclasses.asdict(u))
                       for m, u in usage_by_model.items()}
             res = run_sample(sample, agent, memory_dir)
-            # diff：after - before
+            # Usage delta: after - before
             sample_usage: dict[str, TokenUsage] = {}
             for m, after in usage_by_model.items():
                 b = before.get(m, TokenUsage())
@@ -393,7 +391,7 @@ def run_all(
     return results
 
 
-# ---------- 聚合 & 输出 ----------
+# ---------- Aggregation and output ----------
 
 
 @dataclass
@@ -424,7 +422,7 @@ class ScenarioAgg:
 
 
 def aggregate(results: list[SampleResult]) -> dict[str, ScenarioAgg]:
-    """按剧本 + overall 分桶；返回 dict（key="_overall" 为总盘）。"""
+    """Aggregate by scenario and overall; the _overall key contains totals."""
     buckets: dict[str, ScenarioAgg] = {"_overall": ScenarioAgg()}
     for r in results:
         buckets["_overall"].ingest(r)
@@ -447,7 +445,7 @@ def _estimate_cost(tokens: dict[str, TokenUsage]) -> float:
 
 
 def format_table(agg: dict[str, ScenarioAgg]) -> str:
-    """人类可读的聚合表。按"剧本行 + overall 行"输出关键比例 + 延迟 + tokens。"""
+    """Render readable scenario and overall metrics, latency, and token usage."""
     lines: list[str] = []
     header = (
         f"{'scenario':<22} "
@@ -478,7 +476,7 @@ def format_table(agg: dict[str, ScenarioAgg]) -> str:
             f"{lat:6.1f}s"
         )
 
-    # 先打各剧本，再打 overall
+    # Render individual scenarios before overall totals.
     for name in sorted(k for k in agg if k != "_overall"):
         lines.append(row(name, agg[name]))
     lines.append("-" * len(header))
@@ -486,7 +484,7 @@ def format_table(agg: dict[str, ScenarioAgg]) -> str:
 
     # tokens & cost
     lines.append("")
-    lines.append("Tokens & 估算成本（_PRICING_PER_1M 为 portfolio 精度）：")
+    lines.append("Tokens and estimated cost (approximate portfolio-level pricing):")
     overall_tokens = agg["_overall"].tokens
     for m, u in sorted(overall_tokens.items()):
         lines.append(
@@ -494,14 +492,14 @@ def format_table(agg: dict[str, ScenarioAgg]) -> str:
             f"completion={u.completion:>6} total={u.total:>6}"
         )
     cost = _estimate_cost(overall_tokens)
-    lines.append(f"  估算总成本 ≈ ¥{cost:.4f}")
+    lines.append(f"  Estimated total cost ≈ ¥{cost:.4f}")
 
     return "\n".join(lines)
 
 
 def _result_to_dict(r: SampleResult) -> dict[str, Any]:
     d = dataclasses.asdict(r)
-    # TokenUsage 转纯 dict
+    # Convert TokenUsage instances to plain dictionaries.
     d["tokens_by_model"] = {m: dataclasses.asdict(u) for m, u in r.tokens_by_model.items()}
     d["passed"] = r.passed
     return d
@@ -546,31 +544,31 @@ def _filter_samples(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="E2 自动指标 harness")
+    parser = argparse.ArgumentParser(description="E2 automated evaluation harness")
     parser.add_argument("--run", action="store_true",
-                        help="真的调 LLM 跑样本。默认 --dry-run，仅列出要跑的样本。")
+                        help="Run samples with live LLM calls. By default, only list planned samples.")
     parser.add_argument("--ids", nargs="*", default=[],
-                        help="按样本 id 过滤，可多个")
+                        help="Filter by sample IDs; accepts multiple values")
     parser.add_argument("--scenarios", nargs="*", default=[],
-                        help="按剧本名过滤，可多个")
+                        help="Filter by scenarios; accepts multiple values")
     parser.add_argument("--out", type=Path, default=None,
-                        help="报告输出路径；默认 eval/reports/{timestamp}.json")
+                        help="Report output path; default: eval/reports/{timestamp}.json")
     args = parser.parse_args(argv)
 
     samples = _filter_samples(load_all(), args.ids, args.scenarios)
     if not samples:
-        print("没有样本匹配过滤条件", file=sys.stderr)
+        print("No samples match the filters", file=sys.stderr)
         return 1
 
-    print(f"待跑样本数：{len(samples)}")
+    print(f"Samples to run: {len(samples)}")
     for s in samples:
         print(f"  - {s.id:<20} {s.scenario:<20} turns={len(s.turns)}")
 
     if not args.run:
-        print("\n[dry-run] 想真跑请加 --run（会调主模型，产生成本）")
+        print("\n[dry-run] Add --run for live execution (incurs model usage costs)")
         return 0
 
-    print("\n开始跑样本…")
+    print("\nRunning samples...")
     results = run_all(samples)
     agg = aggregate(results)
 
@@ -581,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
         / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     )
     write_report(results, agg, out_path)
-    print(f"\n报告已落盘：{out_path}")
+    print(f"\nReport saved: {out_path}")
     return 0
 
 

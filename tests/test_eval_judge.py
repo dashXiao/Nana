@@ -1,7 +1,4 @@
-"""E3 Judge 纯函数单测：prompt 构造 / JSON 解析 / 聚合 / 边界。
-
-通过 mock chat_fn 完全绕开 LLM，零成本。真实端到端留给 `eval/judge.py` CLI。
-"""
+"""Pure E3 tests for prompt construction, JSON parsing, aggregation, and edge cases; mock chat_fn avoids live calls and costs."""
 
 from __future__ import annotations
 
@@ -49,7 +46,7 @@ def test_parse_code_fence_stripped():
 
 
 def test_parse_extra_preamble_ignored():
-    text = f"我认为如下：\n{_raw(3, 3, 3)}\n希望有帮助。"
+    text = f"My assessment:\n{_raw(3, 3, 3)}\nHope this helps."
     run = parse_judge_response(text)
     assert run.helpfulness.score == 3
 
@@ -81,7 +78,7 @@ def test_parse_non_integer_score_raises():
 
 
 def test_parse_no_braces_raises():
-    with pytest.raises(ValueError, match="没找到 JSON"):
+    with pytest.raises(ValueError, match="No JSON object found"):
         parse_judge_response("just prose no json")
 
 
@@ -91,7 +88,7 @@ def test_parse_no_braces_raises():
 def _fake_sample(
     sample_id: str = "s1",
     scenario: str = "refund_flow",
-    final: str = "已退款",
+    final: str = "Refund issued",
     tool_calls: list[dict] | None = None,
     turns: list[str] | None = None,
 ) -> dict:
@@ -108,30 +105,30 @@ def _fake_sample(
 
 def test_prompt_includes_all_sections():
     sample = _fake_sample(
-        final="您好，已退款。",
+        final="Hello, the refund has been issued.",
         tool_calls=[{"name": "query_orders",
                      "arguments": {"user_id": "U001"},
                      "result": {"ok": True, "data": {"orders": []}}}],
-        turns=["帮我退款"],
+        turns=["Please refund my order"],
     )
     text = build_user_prompt(sample)
     assert "refund_flow" in text
-    assert "帮我退款" in text
+    assert "Please refund my order" in text
     assert "query_orders" in text
     assert "U001" in text
-    assert "您好，已退款。" in text
+    assert "Hello, the refund has been issued." in text
 
 
 def test_prompt_no_tool_calls_branch():
     sample = _fake_sample(tool_calls=[], turns=["hi"])
     text = build_user_prompt(sample)
-    assert "(无工具调用)" in text
+    assert "(No tool calls)" in text
 
 
 def test_prompt_no_turns_fallback():
     sample = _fake_sample(tool_calls=[])  # no _turns key
     text = build_user_prompt(sample)
-    assert "turns 未附带" in text
+    assert "User turns not attached" in text
 
 
 def test_prompt_truncates_long_results():
@@ -142,10 +139,10 @@ def test_prompt_truncates_long_results():
         turns=["q"],
     )
     text = build_user_prompt(sample)
-    assert "已截断" in text
+    assert "truncated" in text
 
 
-# ---------- judge_sample（mock chat） ----------
+# ---------- judge_sample (mock chat) ----------
 
 
 class _MockResp:
@@ -154,7 +151,7 @@ class _MockResp:
 
 
 def _chat_returning(*texts: str):
-    """构造一个按 call-count 轮流返回不同文本的 chat_fn。"""
+    """Return different scripted texts according to call count."""
     calls = iter(texts)
 
     def chat(messages, model=None, **kwargs):  # noqa: ARG001
@@ -189,16 +186,16 @@ def test_judge_sample_records_error_on_bad_response():
 
 
 def test_judge_sample_stops_at_first_parse_error():
-    """K=3 时若第二次解析失败，不吞前面已成功的 runs。"""
+    """With K=3, a failure on run two must preserve the successful first run."""
     sample = _fake_sample(turns=["hi"])
     chat = _chat_returning(_raw(5, 5, 5), "not json", _raw(4, 4, 4))
     r = judge_sample(sample, chat_fn=chat, k=3)
     assert r.error is not None
-    # 中断前已解析成功的那一轮应该还在
+    # Preserve the successful run parsed before the failure.
     assert len(r.runs) == 1
 
 
-# ---------- 聚合 ----------
+# ---------- Aggregation ----------
 
 
 def _result(sid: str, scenario: str, *scores: tuple[int, int, int]) -> JudgeResult:
@@ -229,7 +226,7 @@ def test_aggregate_overall_and_per_scenario_means():
 def test_aggregate_multisample_flattens_runs():
     r = _result("a", "x", (5, 5, 5), (3, 3, 3))  # K=2
     agg = aggregate([r])
-    # 两个 run 都进桶
+    # Include both runs in the bucket.
     assert agg["x"]["faithfulness"].n == 2
     assert agg["x"]["faithfulness"].mean == pytest.approx(4.0)
 
@@ -237,7 +234,7 @@ def test_aggregate_multisample_flattens_runs():
 def test_aggregate_skips_errored():
     r = JudgeResult(sample_id="x", scenario="s", error="oops")
     agg = aggregate([r])
-    # 空桶也应存在，但 n=0
+    # Keep empty buckets with n=0.
     assert agg["_overall"]["faithfulness"].n == 0
 
 
@@ -278,7 +275,7 @@ def test_filter_no_match_returns_empty():
     assert _filter_samples(samples, ids=["z"], scenarios=[]) == []
 
 
-# ---------- JudgeResult 均值 / 方差 ----------
+# ---------- JudgeResult mean and variance ----------
 
 
 def test_result_mean_stdev_single_run():

@@ -1,97 +1,86 @@
-# 剧本 4：商品咨询
-#
-# 考察点：product_inquiry 意图 + catalog 指名→ID → query_product 融合 DB+md
-# - 用户用自然名（"X1 耳机"）时 LLM 应映射到 product_id 再调工具
-# - 参数/价格/库存必须走工具，不得凭记忆答
-# - 允许一次查询多个商品（列表参数）
-#
-# 种子事实：
-#   P001 无线蓝牙耳机 X1    299.0  库存 50
-#   P002 智能手表 Pro       899.0  库存 30
-#   P003 人体工学办公椅    1299.0  库存 20
+# Map product names to catalog IDs; retrieve DB fields and full Markdown descriptions. Prices and stock: P001 299/50, P002 899/30, P003 1299/20.
 scenario: product_inquiry
-description: catalog 指名 + 多源融合；Faithfulness 同样是核心衡量
-
+description: 'Map product names to catalog IDs; retrieve DB fields and full Markdown descriptions. Prices
+  and stock: P001 299/50, P002 899/30, P003 1299/20.'
 samples:
   - id: product-01
     intent: product_inquiry
     user_id: U001
     turns:
-      - "那个 X1 耳机续航多久，现在还有货吗？"
-    expected_tools: [query_product]
-    expected_phrases: ["50"]
+      - How long does the X1 earbud battery last, and is it in stock?
+    expected_tools:
+      - query_product
+    expected_phrases:
+      - '50'
     forbidden_tools: []
     forbidden_phrases: []
-    notes: |
-      自然名『X1 耳机』→ P001 的映射由 prompt patch 里的 catalog 片段兜住。
-      用户只问续航 + 库存，不问价；断言只卡库存 50。续航具体数字走 md 兜底，
-      由 E3 Judge 评估是否与 P001.md 一致，这里不做字面断言。
-
+    notes: Resolve X1 earbuds to P001 using the catalog patch, then retrieve product details. Assert
+      stock 50; the judge checks battery claims against P001.md.
   - id: product-02
     intent: product_inquiry
     user_id: U002
     turns:
-      - "智能手表 Pro 多少钱？"
-    expected_tools: [query_product]
-    expected_phrases: ["899"]
+      - How much is the Smartwatch Pro?
+    expected_tools:
+      - query_product
+    expected_phrases:
+      - '899'
     forbidden_tools: []
     forbidden_phrases: []
-    notes: "最直白的价格问。禁止凭记忆。"
-
+    notes: A direct price query must retrieve product data rather than rely on memory.
   - id: product-03
     intent: product_inquiry
     user_id: U001
     turns:
-      - "办公椅和耳机分别是什么价？"
-    expected_tools: [query_product]
-    expected_phrases: ["299", "1299"]
+      - What are the prices of the office chair and the earbuds?
+    expected_tools:
+      - query_product
+    expected_phrases:
+      - '299'
+      - '1299'
     forbidden_tools: []
     forbidden_phrases: []
-    notes: "一次查多个商品（query_product 接受 product_ids 列表）。"
-
+    notes: Retrieve multiple products in one query_product call using a product_ids list.
   - id: product-04
     intent: product_inquiry
     user_id: U002
     turns:
-      - "智能手表支持 eSIM 吗？电池多少毫安？"
-    expected_tools: [query_product]
+      - Does the smartwatch support eSIM? What is its battery capacity in mAh?
+    expected_tools:
+      - query_product
     expected_phrases: []
     forbidden_tools: []
     forbidden_phrases: []
-    notes: |
-      Faithfulness 硬核用例：P002.md 完全没提 eSIM、也没给电池 mAh 数。
-      期望 agent 如实承认『这部分资料没有』，不得编造 battery 数字。
-      字符串断言无法区分『声明没有 mAh 数据』vs.『编造 mAh 数字』——
-      例如『官方未标注 mAh』是合规答复，但会命中 forbidden "mAh"。
-      因此两侧断言都留空，整道题交给 E3 LLM-as-Judge 评 Faithfulness。
-
+    notes: 'P002.md specifies neither eSIM support nor battery capacity in mAh. Acknowledge missing information
+      without inventing it. Leave phrase checks empty: even a correct disclaimer can contain mAh. The
+      judge assesses faithfulness.'
   - id: product-05
     intent: product_inquiry
     user_id: U001
     turns:
-      - "你们卖手机壳吗？"
+      - Do you sell phone cases?
     expected_tools: []
     expected_phrases: []
     forbidden_tools: []
-    forbidden_phrases: ["P004", "P005", "暂时缺货", "已下架"]
-    notes: |
-      不存在商品：catalog 只有 P001/P002/P003。
-      正确路径——agent 看 prompt patch 里的 catalog 片段就能直接答"不卖手机壳"，
-      不必调 query_product。expected_tools 留空但不强 forbid（agent 偶尔会"为保险"
-      一次性查 [P001,P002,P003] 也不算错）。
-      forbidden_phrases 守住核心：不得编造不存在的 product_id 或"暂时缺货/已下架"
-      （这两种话术是典型的"为了贴合用户而编造"）。
-
+    forbidden_phrases:
+      - P004
+      - P005
+      - temporarily out of stock
+      - discontinued
+    notes: Only P001/P002/P003 exist. The catalog allows a direct answer that phone cases are not sold;
+      an optional catalog-wide query is acceptable. Do not invent IDs or claim the product is temporarily
+      unavailable or discontinued.
   - id: product-06
     intent: product_inquiry
     user_id: U002
     turns:
-      - "X1 耳机和智能手表 Pro 哪个更值得买？"
-    expected_tools: [query_product]
-    expected_phrases: ["299", "899"]
+      - Which is better value, the X1 earbuds or the Smartwatch Pro?
+    expected_tools:
+      - query_product
+    expected_phrases:
+      - '299'
+      - '899'
     forbidden_tools: []
     forbidden_phrases: []
-    notes: |
-      规格对比：考察 agent 一次拿多商品的能力（query_product 接受 product_ids 列表）
-      并基于真实价格而非凭印象比较。两边价格都要在最终回复中出现。
-      "更值得买"是开放问题，不再卡推荐倾向——交给 E3 Judge 评 helpfulness。
+    notes: Retrieve both products and compare using actual prices, 299 and 899. Recommendation preference
+      is open-ended and judged for helpfulness.

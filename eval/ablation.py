@@ -1,18 +1,16 @@
-"""E4 消融实验：三配置对比，佐证"双模型分层 + 按需加载"两项架构决策。
+"""E4 ablation study of model tiers and intent-specific context loading.
 
-设计要点：
-- **三配置**：
-  - `baseline`：分层模型（ReAct=主模型 / 路由+记忆=轻量模型） + 路由按需加载 patch
-  - `force-main`：所有 chat 强制走主模型，关掉分层；预期 token 成本升、质量不升
-  - `full-context`：始终判定 intent=other，走 `other` 兜底 patch（全量通用规则 + 全 5 工具）；
-    预期 per-turn prompt 变长（多挂了规则/catalog），token 上升，质量不升
-- **轻改 harness**：`build_agent` 新增 `force_model` / `force_intent_other`，默认不变
-- **复用 E2+E3**：每配置跑 `harness.run_all` → `judge.run_batch`，对比表并列
-- **成本可控**：judge 只跑 K=1；`--smoke` 用 1 条样本验装配
+Configurations:
+- baseline: main-model ReAct plus lightweight routing/memory and focused prompt patches.
+- force-main: use the main model for all calls to measure the effect of model tiers.
+- full-context: force intent=other with all rules and tools to measure focused loading.
+
+Reuse harness.run_all and judge.run_batch for metrics and quality. Judge defaults to K=1;
+--smoke runs one sample per configuration to check assembly at low cost.
 
 CLI:
-    uv run python -m eval.ablation --smoke              # 冒烟：3 config × 1 sample
-    uv run python -m eval.ablation --run                # 全量：3 config × 24 samples
+    uv run python -m eval.ablation --smoke
+    uv run python -m eval.ablation --run
     uv run python -m eval.ablation --run --configs baseline force-main
 """
 
@@ -37,7 +35,7 @@ from eval.loader import Sample, load_all
 ChatFn = Callable[..., Any]
 
 
-# ---------- 配置矩阵 ----------
+# ---------- Configuration matrix ----------
 
 
 @dataclass(frozen=True)
@@ -51,29 +49,26 @@ CONFIGS: tuple[AblationConfig, ...] = (
     AblationConfig(
         name="baseline",
         build_kwargs={},
-        description="分层模型 + 路由按需加载（本方案）",
+        description="Tiered models with intent-specific context loading (baseline)",
     ),
     AblationConfig(
         name="force-main",
         build_kwargs={"force_model": MODEL},
-        description="所有 chat 强制走主模型，关掉双模型分层",
+        description="Main model for all chat calls; disable model tiers",
     ),
     AblationConfig(
         name="full-context",
         build_kwargs={"force_intent_other": True},
-        description="始终 intent=other：走兜底 patch（全规则 + 全工具），关掉按需加载",
+        description="Always intent=other: full fallback rules and tools; disable focused loading",
     ),
 )
 
 
-# ---------- Judge chat 包装（独立 token 计数） ----------
+# ---------- Judge chat wrapper with separate token accounting ----------
 
 
 def _make_judge_chat(tokens_sink: TokenUsage) -> ChatFn:
-    """Judge 的 chat 独立于 agent 预算统计；本函数只管把 judge 的用量挤到 sink。
-
-    不切模型（judge 一律 MODEL，即主模型）。
-    """
+    """Accumulate judge usage separately from the agent budget; always use the main model."""
     from agent.llm import chat as real_chat
 
     def wrapped(messages, tools=None, model=None, **kwargs):
@@ -90,7 +85,7 @@ def _make_judge_chat(tokens_sink: TokenUsage) -> ChatFn:
     return wrapped
 
 
-# ---------- 单配置跑完的快照 ----------
+# ---------- Per-configuration snapshot ----------
 
 
 @dataclass
@@ -112,7 +107,7 @@ def run_config(
     sample_results = harness.run_all(samples, build_kwargs=config.build_kwargs)
     agent_agg = harness.aggregate(sample_results)
 
-    # harness 报告的 sample dict 就是 judge 的输入格式
+    # Harness sample dictionaries are the input format expected by the judge.
     sample_dicts = [harness._result_to_dict(r) for r in sample_results]
 
     judge_tokens = TokenUsage()
@@ -144,15 +139,15 @@ def run_config(
     )
 
 
-# ---------- 对比表 ----------
+# ---------- Comparison tables ----------
 
 
 def format_comparison_table(results: list[ConfigResult]) -> str:
-    """两张并排表：能力+成本（E2） / 质量（E3）。行是 config，列是指标。"""
+    """Render configuration comparisons for E2 capability/cost and E3 quality."""
     lines: list[str] = []
 
-    # --- E2 能力 + 成本 ---
-    lines.append("## E2 指标（能力 / 成本 / 延迟）")
+    # --- E2 capability and cost ---
+    lines.append("## E2 metrics (capability / cost / latency)")
     header = (
         f"{'config':<14} "
         f"{'N':>3} "
@@ -185,9 +180,9 @@ def format_comparison_table(results: list[ConfigResult]) -> str:
             f"{lat:6.1f}s"
         )
 
-    # --- E3 质量 ---
+    # --- E3 quality ---
     lines.append("")
-    lines.append("## E3 Judge 维度（faith / help / tone）")
+    lines.append("## E3 judge dimensions (faith / help / tone)")
     header2 = (
         f"{'config':<14} "
         f"{'N':>3} "
@@ -211,9 +206,9 @@ def format_comparison_table(results: list[ConfigResult]) -> str:
             f"{dims['safety_tone'].mean:6.2f}"
         )
 
-    # --- 评估自身开销 ---
+    # --- Evaluation overhead ---
     lines.append("")
-    lines.append("## Judge 自身开销（不计入 agent 预算）")
+    lines.append("## Judge overhead (excluded from agent budget)")
     total_judge = TokenUsage()
     for r in results:
         total_judge.merge(r.judge_tokens)
@@ -231,7 +226,7 @@ def _pct(num: int, denom: int) -> str:
     return f"{100 * num / denom:4.0f}%" if denom else "  - "
 
 
-# ---------- 报告落盘 ----------
+# ---------- Save reports ----------
 
 
 def _config_to_dict(r: ConfigResult) -> dict[str, Any]:
@@ -281,24 +276,24 @@ def _select_configs(names: list[str]) -> list[AblationConfig]:
     known = {c.name: c for c in CONFIGS}
     missing = [n for n in names if n not in known]
     if missing:
-        raise SystemExit(f"未知配置：{missing}，可选：{list(known)}")
+        raise SystemExit(f"Unknown configurations: {missing}; available: {list(known)}")
     return [known[n] for n in names]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="E4 消融实验")
+    parser = argparse.ArgumentParser(description="E4 ablation study")
     parser.add_argument("--run", action="store_true",
-                        help="真跑（默认 dry-run，仅列计划）")
+                        help="Execute live calls (default: dry run, list the plan only)")
     parser.add_argument("--smoke", action="store_true",
-                        help="冒烟：只用 1 条样本（快速验 3 配置的装配正确）")
+                        help="Smoke check: one sample to verify all three configurations")
     parser.add_argument("--configs", nargs="*", default=[],
-                        help=f"只跑指定 config；可选：{[c.name for c in CONFIGS]}")
+                        help=f"Run only selected configurations; available: {[c.name for c in CONFIGS]}")
     parser.add_argument("--scenarios", nargs="*", default=[],
-                        help="按剧本名过滤样本，可多个；不传则跑全集")
+                        help="Filter by scenarios; accepts multiple values; default: all samples")
     parser.add_argument("--k", type=int, default=1,
-                        help="Judge 每样本采样次数（默认 1）")
+                        help="Judge runs per sample (default: 1)")
     parser.add_argument("--out", type=Path, default=None,
-                        help="报告输出路径；默认 eval/reports/{ts}-ablation.json")
+                        help="Report output path; default: eval/reports/{ts}-ablation.json")
     args = parser.parse_args(argv)
 
     samples = load_all()
@@ -308,18 +303,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.smoke:
         samples = samples[:1]
     if not samples:
-        print("没有样本匹配过滤条件", file=sys.stderr)
+        print("No samples match the filters", file=sys.stderr)
         return 1
     selected = _select_configs(args.configs)
 
-    print(f"消融配置：{len(selected)} 个 × 样本 {len(samples)} 条 × Judge K={args.k}")
+    print(f"Ablation: {len(selected)} configurations × {len(samples)} samples × judge K={args.k}")
     for c in selected:
         print(f"  - {c.name:<14} {c.description}")
     for s in samples:
         print(f"  sample: {s.id:<16} {s.scenario}")
 
     if not args.run and not args.smoke:
-        print("\n[dry-run] --run 真跑（会调 LLM 产生成本） / --smoke 跑 1 条冒烟")
+        print("\n[dry-run] --run executes live calls (incurs model usage costs); --smoke runs one sample")
         return 0
 
     results: list[ConfigResult] = []
@@ -333,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-ablation.json"
     )
     write_report(results, out_path, k=args.k)
-    print(f"\n报告已落盘：{out_path}")
+    print(f"\nReport saved: {out_path}")
     return 0
 
 

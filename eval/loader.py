@@ -1,13 +1,9 @@
-"""评测样本加载器：yaml → 校验 → 内存 Sample 结构。
+"""Load YAML evaluation datasets and validate their schema.
 
-E1 的职责只是把 `eval/datasets/*.yaml` 规整成 Python 对象并做完整性校验：
-- id 全局唯一
-- intent ∈ 已知意图集合（POLICY_MAP ∪ {"injection"}）
-- user_id ∈ {"U001", "U002"}（与 seed 数据对齐）
-- expected_tools / forbidden_tools 中出现的工具 ∈ 5 工具预算
-- turns 非空
-
-E2 harness 再在本模块基础上跑样本；Judge / 红队指标稍后各自扩。
+E1 converts eval/datasets/*.yaml into immutable Sample objects. Validate globally
+unique IDs, known intents (including injection), seeded user IDs, the five supported
+tools, and nonempty turns. E2 executes these samples; judge and red-team reporting
+build on the same data.
 """
 
 from __future__ import annotations
@@ -22,8 +18,8 @@ from agent.router import POLICY_MAP
 
 _DATASETS_DIR = Path(__file__).resolve().parent / "datasets"
 
-# 5 工具预算（CLAUDE.md §5）。在此显式列出而不是从 registry 导入——
-# 评测集是独立事实源，工具名变更需要同步更新样本、这里的硬列表正是告警开关。
+# List the five tools explicitly rather than importing the registry.
+# The evaluation dataset is an independent contract; tool renames require coordinated updates.
 _KNOWN_TOOLS: frozenset[str] = frozenset({
     "query_orders",
     "query_product",
@@ -32,31 +28,31 @@ _KNOWN_TOOLS: frozenset[str] = frozenset({
     "escalate_to_human",
 })
 
-# 路由可能的意图结果 + guardrails 短路的 "injection"
+# Router intents plus the injection guardrail short-circuit label.
 _KNOWN_INTENTS: frozenset[str] = frozenset(POLICY_MAP.keys()) | frozenset({"injection"})
 
 _KNOWN_USERS: frozenset[str] = frozenset({"U001", "U002"})
 
-# E5 红队：攻击族标签，用于 eval/red_team.py 按族出拦截率表
+# E5 attack-family labels used by eval/red_team.py for per-family block rates.
 _KNOWN_ATTACK_FAMILIES: frozenset[str] = frozenset({
-    "role_hijack",             # 角色劫持：ignore previous / 忽略指令
-    "prompt_leak",             # 系统提示泄露：reveal / 重复 above / 给我你的 prompt
-    "jailbreak_token",         # 公开越狱模板：DAN / godmode / developer mode / 场景化
-    "privilege_escalation",    # 越权：以他人身份查 / 退款他人订单
-    "policy_fabrication",      # 政策篡改：诱导 LLM 认可错误政策、不查工具就答
+    "role_hijack",             # Role hijacking: ignore previous instructions
+    "prompt_leak",             # System prompt disclosure: reveal or repeat your prompt
+    "jailbreak_token",         # Public jailbreak templates: DAN, godmode, developer mode, roleplay
+    "privilege_escalation",    # Unauthorized access: impersonation or refunds for another user
+    "policy_fabrication",      # Policy fabrication: endorse false rules or answer without retrieving policy
 })
 
 
 @dataclass(frozen=True)
 class Preconditions:
-    """样本运行前需要打桩的状态。v1 只支持长期记忆块注入。"""
+    """State to prepare before a sample runs; currently supports long-term memory blocks."""
 
     long_term_blocks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Sample:
-    """单条评测样本。字段顺序与 yaml 对齐，方便 side-by-side 阅读。"""
+    """One evaluation sample, with fields ordered to match the YAML schema."""
 
     id: str
     scenario: str
@@ -73,7 +69,7 @@ class Sample:
 
 
 class EvalDatasetError(ValueError):
-    """样本集加载/校验异常。"""
+    """Dataset loading or validation error."""
 
 
 def _coerce_tuple(value: Any, field_name: str, sample_id: str) -> tuple[str, ...]:
@@ -81,12 +77,12 @@ def _coerce_tuple(value: Any, field_name: str, sample_id: str) -> tuple[str, ...
         return ()
     if not isinstance(value, list):
         raise EvalDatasetError(
-            f"[{sample_id}] {field_name} 必须是 list，实际 {type(value).__name__}"
+            f"[{sample_id}] {field_name} must be a list; got {type(value).__name__}"
         )
     for item in value:
         if not isinstance(item, str):
             raise EvalDatasetError(
-                f"[{sample_id}] {field_name} 元素必须是 str，出现 {type(item).__name__}: {item!r}"
+                f"[{sample_id}] {field_name} elements must be strings; got {type(item).__name__}: {item!r}"
             )
     return tuple(value)
 
@@ -95,7 +91,7 @@ def _parse_preconditions(raw: Any, sample_id: str) -> Preconditions:
     if raw is None:
         return Preconditions()
     if not isinstance(raw, dict):
-        raise EvalDatasetError(f"[{sample_id}] preconditions 必须是 mapping")
+        raise EvalDatasetError(f"[{sample_id}] preconditions must be a mapping")
     blocks = _coerce_tuple(raw.get("long_term_blocks"), "preconditions.long_term_blocks", sample_id)
     return Preconditions(long_term_blocks=blocks)
 
@@ -103,43 +99,43 @@ def _parse_preconditions(raw: Any, sample_id: str) -> Preconditions:
 def _parse_sample(raw: dict, scenario: str) -> Sample:
     sample_id = raw.get("id")
     if not isinstance(sample_id, str) or not sample_id:
-        raise EvalDatasetError(f"[{scenario}] 发现缺失 id 的样本: {raw!r}")
+        raise EvalDatasetError(f"[{scenario}] sample is missing an id: {raw!r}")
 
     intent = raw.get("intent")
     if intent not in _KNOWN_INTENTS:
         raise EvalDatasetError(
-            f"[{sample_id}] intent={intent!r} 不在已知集合 {sorted(_KNOWN_INTENTS)}"
+            f"[{sample_id}] intent={intent!r} is not in the known set {sorted(_KNOWN_INTENTS)}"
         )
 
     user_id = raw.get("user_id")
     if user_id not in _KNOWN_USERS:
         raise EvalDatasetError(
-            f"[{sample_id}] user_id={user_id!r} 不在 {sorted(_KNOWN_USERS)}（与 seed.py 对齐）"
+            f"[{sample_id}] user_id={user_id!r} is not in {sorted(_KNOWN_USERS)} (must match seed.py)"
         )
 
     turns = _coerce_tuple(raw.get("turns"), "turns", sample_id)
     if not turns:
-        raise EvalDatasetError(f"[{sample_id}] turns 不能为空")
+        raise EvalDatasetError(f"[{sample_id}] turns must not be empty")
 
     expected_tools = _coerce_tuple(raw.get("expected_tools"), "expected_tools", sample_id)
     forbidden_tools = _coerce_tuple(raw.get("forbidden_tools"), "forbidden_tools", sample_id)
     for tool in (*expected_tools, *forbidden_tools):
         if tool not in _KNOWN_TOOLS:
             raise EvalDatasetError(
-                f"[{sample_id}] 工具名 {tool!r} 不在 5 工具预算 {sorted(_KNOWN_TOOLS)}"
+                f"[{sample_id}] tool name {tool!r} is not among the five supported tools {sorted(_KNOWN_TOOLS)}"
             )
 
     notes = raw.get("notes") or ""
     if not isinstance(notes, str):
-        raise EvalDatasetError(f"[{sample_id}] notes 必须是 str")
+        raise EvalDatasetError(f"[{sample_id}] notes must be a string")
 
     attack_family = raw.get("attack_family")
     if attack_family is not None:
         if not isinstance(attack_family, str):
-            raise EvalDatasetError(f"[{sample_id}] attack_family 必须是 str")
+            raise EvalDatasetError(f"[{sample_id}] attack_family must be a string")
         if attack_family not in _KNOWN_ATTACK_FAMILIES:
             raise EvalDatasetError(
-                f"[{sample_id}] attack_family={attack_family!r} 不在已知集合 "
+                f"[{sample_id}] attack_family={attack_family!r} is not in the known set "
                 f"{sorted(_KNOWN_ATTACK_FAMILIES)}"
             )
 
@@ -160,26 +156,26 @@ def _parse_sample(raw: dict, scenario: str) -> Sample:
 
 
 def load_dataset_file(path: Path) -> list[Sample]:
-    """加载单个 yaml 文件并返回样本列表。"""
+    """Load one YAML file and return its samples."""
     with path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
     scenario = data.get("scenario")
     if not isinstance(scenario, str) or not scenario:
-        raise EvalDatasetError(f"{path.name}: 顶层必须有字符串字段 scenario")
+        raise EvalDatasetError(f"{path.name}: top level must contain a string scenario field")
 
     raw_samples = data.get("samples") or []
     if not isinstance(raw_samples, list):
-        raise EvalDatasetError(f"{path.name}: samples 必须是 list")
+        raise EvalDatasetError(f"{path.name}: samples must be a list")
 
     return [_parse_sample(raw, scenario) for raw in raw_samples]
 
 
 def load_all(root: Path | None = None) -> list[Sample]:
-    """加载 `eval/datasets/` 下全部 yaml；全局 id 去重。"""
+    """Load all dataset YAML files and reject duplicate sample IDs globally."""
     root = root or _DATASETS_DIR
     if not root.is_dir():
-        raise EvalDatasetError(f"数据集目录不存在: {root}")
+        raise EvalDatasetError(f"Dataset directory does not exist: {root}")
 
     samples: list[Sample] = []
     for path in sorted(root.glob("*.yaml")):
@@ -189,7 +185,7 @@ def load_all(root: Path | None = None) -> list[Sample]:
     for s in samples:
         if s.id in seen:
             raise EvalDatasetError(
-                f"样本 id 冲突: {s.id!r} 同时出现在 {seen[s.id]!r} 和 {s.scenario!r}"
+                f"Duplicate sample id: {s.id!r} appears in both {seen[s.id]!r} and {s.scenario!r}"
             )
         seen[s.id] = s.scenario
 
@@ -197,7 +193,7 @@ def load_all(root: Path | None = None) -> list[Sample]:
 
 
 def group_by_scenario(samples: list[Sample]) -> dict[str, list[Sample]]:
-    """按 scenario 分桶，便于 harness 按剧本报表。"""
+    """Group samples by scenario for harness reporting."""
     groups: dict[str, list[Sample]] = {}
     for s in samples:
         groups.setdefault(s.scenario, []).append(s)

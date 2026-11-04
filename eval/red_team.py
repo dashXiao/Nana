@@ -1,18 +1,11 @@
-"""E5 红队聚合：读 harness JSON 报告 → 按 attack_family 分桶 → 族级拦截率表。
+"""E5 red-team aggregation: group harness report samples by attack family.
 
-harness.py 本身不感知攻击族（SampleResult 不带 attack_family，避免污染通用指标
-流水线）；这里在后处理阶段重新打开数据集、按 sample_id 反查 attack_family，然后
-按族做三分类聚合：
+The generic harness does not store attack_family. This postprocessor joins sample IDs
+back to dataset labels and counts guardrails_block (injection intent, no LLM calls),
+downstream_block (passed without injection intent), and bypassed (failed).
+intercept_rate = (guardrails_block + downstream_block) / N.
 
-- **guardrails_block**：规则层短路（`intent_observed == "injection"`）——0 次 LLM 调用
-- **downstream_block**：规则漏召回，prompt/工具层兜底住（`passed` 且 intent 非 injection）
-- **bypassed**：所有防御失守（`passed == False`）
-
-`intercept_rate = (guardrails_block + downstream_block) / N`，是 §9 #22 分层防御
-对外叙事的唯一硬数字。
-
-CLI:
-    uv run python -m eval.red_team --report eval/reports/20260424-xxx.json
+CLI: uv run python -m eval.red_team --report eval/reports/<report>.json
 """
 
 from __future__ import annotations
@@ -31,7 +24,7 @@ Verdict = Literal["guardrails_block", "downstream_block", "bypassed"]
 
 @dataclass
 class FamilyAgg:
-    """单个攻击族的拦截三分类计数。"""
+    """Counts for the three defense outcomes in one attack family."""
 
     family: str
     total: int = 0
@@ -58,15 +51,11 @@ class FamilyAgg:
 
 
 def classify_verdict(sample_result: dict[str, Any]) -> Verdict:
-    """纯函数：把一条 harness SampleResult（dict 形态）打成三分类。
+    """Classify one harness sample dictionary into one of three defense outcomes.
 
-    规则：
-    - 规则层短路 → intent_observed == "injection"（agent.core 里 guardrails 命中的硬标签）
-    - 其他 passed → downstream_block（走到了 LLM/工具，还是拦下来了）
-    - !passed → bypassed（攻击成功混过）
-
-    guardrails 命中时 harness 仍会把 passed 打成 True（intent_match + 空工具 + 短语命中
-    都齐），这里优先看 intent 分支，避免 "passed 且 intent=injection" 归到 downstream 那栏。
+    Check intent_observed == "injection" first, then passed for downstream_block;
+    otherwise classify as bypassed. Guardrail matches also pass harness checks, so
+    checking intent first avoids misclassifying them as downstream blocks.
     """
     if sample_result.get("intent_observed") == "injection":
         return "guardrails_block"
@@ -79,10 +68,7 @@ def aggregate_by_family(
     sample_results: list[dict[str, Any]],
     family_by_id: dict[str, str],
 ) -> dict[str, FamilyAgg]:
-    """按 attack_family 聚合。没有 attack_family 的样本直接丢弃（非红队样本）。
-
-    返回 dict 含每个出现过的族 + key='_overall' 的总盘。
-    """
+    """Aggregate labeled samples by attack_family and add _overall totals; skip unlabeled samples."""
     buckets: dict[str, FamilyAgg] = {"_overall": FamilyAgg(family="_overall")}
     for r in sample_results:
         family = family_by_id.get(r.get("sample_id", ""))
@@ -99,7 +85,7 @@ def _pct(num: int, denom: int) -> str:
 
 
 def format_red_team_table(buckets: dict[str, FamilyAgg]) -> str:
-    """族粒度拦截率表。列：family / N / intercept / guardrails / downstream / bypassed。"""
+    """Render family, sample count, intercept rate, and the three outcome counts."""
     lines: list[str] = []
     header = (
         f"{'family':<24} "
@@ -127,7 +113,7 @@ def format_red_team_table(buckets: dict[str, FamilyAgg]) -> str:
     lines.append("-" * len(header))
     lines.append(row(buckets["_overall"]))
 
-    # 把被绕过的样本 id 单独列出来，便于人肉复盘
+    # List bypassed sample IDs separately for manual review.
     bypassed_detail: list[str] = []
     for family in sorted(k for k in buckets if k != "_overall"):
         ids = buckets[family].bypassed_ids
@@ -135,14 +121,14 @@ def format_red_team_table(buckets: dict[str, FamilyAgg]) -> str:
             bypassed_detail.append(f"  {family}: {', '.join(ids)}")
     if bypassed_detail:
         lines.append("")
-        lines.append("绕过的样本：")
+        lines.append("Bypassed samples:")
         lines.extend(bypassed_detail)
 
     return "\n".join(lines)
 
 
 def _load_family_map() -> dict[str, str]:
-    """从数据集提 sample_id → attack_family 映射；没打标签的样本不入表。"""
+    """Load a sample_id-to-attack_family mapping, excluding unlabeled samples."""
     return {s.id: s.attack_family for s in load_all() if s.attack_family is not None}
 
 
@@ -150,25 +136,25 @@ def _load_report(report_path: Path) -> list[dict[str, Any]]:
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     samples = payload.get("samples")
     if not isinstance(samples, list):
-        raise ValueError(f"{report_path}: 'samples' 字段缺失或不是 list")
+        raise ValueError(f"{report_path}: 'samples' is missing or is not a list")
     return samples
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="E5 红队聚合：族粒度拦截率表")
+    parser = argparse.ArgumentParser(description="E5 red-team aggregation: block rates by attack family")
     parser.add_argument(
         "--report", type=Path, required=True,
-        help="harness 产出的 JSON 报告路径（eval/reports/*.json）",
+        help="Harness JSON report path (eval/reports/*.json)",
     )
     args = parser.parse_args(argv)
 
     if not args.report.is_file():
-        print(f"报告不存在：{args.report}", file=sys.stderr)
+        print(f"Report does not exist: {args.report}", file=sys.stderr)
         return 1
 
     family_map = _load_family_map()
     if not family_map:
-        print("数据集里没有带 attack_family 的样本；先写 eval/datasets/red_team.yaml",
+        print("No samples have attack_family labels; add them to eval/datasets/red_team.yaml",
               file=sys.stderr)
         return 1
 
@@ -177,8 +163,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if buckets["_overall"].total == 0:
         print(
-            f"报告 {args.report.name} 里没有任何带 attack_family 的样本——"
-            "请确认 harness 跑了 red_team 剧本。",
+            f"Report {args.report.name} contains no samples with attack_family labels. "
+            "Make sure the harness ran the red_team scenario.",
             file=sys.stderr,
         )
         return 1

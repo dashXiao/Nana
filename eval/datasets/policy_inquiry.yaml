@@ -1,81 +1,82 @@
-# 剧本 3：政策咨询新客
-#
-# 考察点：policy_question 意图 + Faithfulness
-# - 必须先调 query_policy 拿权威条款，不得凭记忆答
-# - 回答要引用 policies.md 里的具体数字（7 天 / 3–7 工作日 / 2–5 工作日 等）
-# - 跨政策问题（退货 + 退款到账）一次 query_policy 即够（整文件返回）
+# Retrieve the authoritative policy before answering; assess factual grounding and exact policy terms.
 scenario: policy_inquiry
-description: 政策条款查询；Faithfulness 是核心衡量（回答是否基于文档）
-
+description: Retrieve the authoritative policy before answering; assess factual grounding and exact policy
+  terms.
 samples:
   - id: policy-01
     intent: policy_question
     user_id: U001
     turns:
-      - "你们的退货政策是几天内可以退？"
-    expected_tools: [query_policy]
-    expected_phrases: ["7"]
+      - How many days do I have to return an item under your return policy?
+    expected_tools:
+      - query_policy
+    expected_phrases:
+      - '7'
     forbidden_tools: []
     forbidden_phrases: []
-    notes: "最直白的政策问。必须调 query_policy，答案含『7』（天）。"
-
+    notes: Retrieve the policy and state the seven-day return window.
   - id: policy-02
     intent: policy_question
     user_id: U002
     turns:
-      - "退款大概多久到账？"
-    expected_tools: [query_policy]
-    expected_phrases: [工作日]
+      - How long does a refund usually take to arrive?
+    expected_tools:
+      - query_policy
+    expected_phrases:
+      - business days
     forbidden_tools: []
     forbidden_phrases: []
-    notes: "到账时效问。答案应提到『工作日』并给出区间。"
-
+    notes: Explain processing time in business days with the applicable ranges.
   - id: policy-03
     intent: policy_question
     user_id: U001
     turns:
-      - "我在新疆，下单后多久能发货、物流大概几天？"
-    expected_tools: [query_policy]
-    expected_phrases: ["48", "偏远"]
+      - I am in Xinjiang. How soon will my order ship, and how long will delivery take?
+    expected_tools:
+      - query_policy
+    expected_phrases:
+      - '48'
+      - remote
     forbidden_tools: []
     forbidden_phrases: []
-    notes: "跨政策（发货 + 物流 + 偏远）。一次 query_policy 整文件返回即够。"
-
+    notes: One full policy retrieval covers dispatch, delivery, and remote-area timing.
   - id: policy-04
     intent: policy_question
     user_id: U001
     turns:
-      - "已经下单但还没发货，能改收货地址吗？"
-    expected_tools: [query_policy]
-    expected_phrases: [修改, 未发货]
+      - I have ordered but it has not shipped yet. Can I change the delivery address?
+    expected_tools:
+      - query_policy
+    expected_phrases:
+      - change
+      - not shipped
     forbidden_tools: []
     forbidden_phrases: []
-    notes: "2.3 节地址修改条款。"
-
+    notes: 'Apply section 2.3: address changes are available before shipping.'
   - id: policy-05
     intent: policy_question
     user_id: U002
     turns:
-      - "发货十多天了的订单还能走退货流程吗？"
-    expected_tools: [query_policy]
-    expected_phrases: [人工]
-    forbidden_tools: [initiate_refund]
+      - Can an order shipped more than ten days ago still use the standard return process?
+    expected_tools:
+      - query_policy
+    expected_phrases:
+      - human
+    forbidden_tools:
+      - initiate_refund
     forbidden_phrases: []
-    notes: |
-      超期咨询：1.1 节明确"超过 7 天不再支持退货，请联系人工客服走特殊处理"。
-      考察 agent 是否会顺手把"建议联系人工"作为闭环答复给出，而不是只复读"不支持"。
-      forbidden_tools 兜底：政策咨询场景下绝不应该真的发起退款。
-
+    notes: After seven days, explain that standard returns are unavailable and suggest a human agent for
+      special handling. Policy inquiry must not initiate a refund.
   - id: policy-06
     intent: policy_question
     user_id: U001
     turns:
-      - "你们办公椅这种大件商品的物流走自营还是第三方？"
-    expected_tools: [query_policy]
-    expected_phrases: [第三方]
+      - Do you deliver large items like office chairs yourselves or through a third-party carrier?
+    expected_tools:
+      - query_policy
+    expected_phrases:
+      - third-party
     forbidden_tools: []
     forbidden_phrases: []
-    notes: |
-      2.2 节角落条款"大件商品由第三方物流承运，时效以物流方为准"。
-      把这条偏冷门的政策也覆盖进来，确保 query_policy 一次返回整文件后
-      LLM 能精确定位、不漏读。"第三方"是关键词断言。
+    notes: 'Exercise the less prominent large-item clause in section 2.2: third-party carriers determine
+      delivery timing.'

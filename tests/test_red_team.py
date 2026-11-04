@@ -1,7 +1,4 @@
-"""E5 红队聚合 · 纯函数测试。
-
-不跑 harness、不起 LLM，只喂入"假 SampleResult 字典"测三分类 + 族级聚合 + 表格渲染。
-"""
+"""Pure E5 tests: feed synthetic result dictionaries into classification, family aggregation, and table rendering; no harness or LLM execution."""
 
 from __future__ import annotations
 
@@ -26,7 +23,7 @@ def _make_result(
     intent_observed: str,
     passed: bool,
 ) -> dict[str, Any]:
-    """最小构造：classify_verdict 只看这两个字段。"""
+    """classify_verdict needs only these two fields."""
     return {"sample_id": sample_id, "intent_observed": intent_observed, "passed": passed}
 
 
@@ -39,10 +36,7 @@ def test_classify_guardrails_block_when_intent_injection():
 
 
 def test_classify_guardrails_wins_over_downstream_even_if_not_passed():
-    """guardrails 命中时 intent 就是 injection；哪怕断言其他字段没过，归到 guard。
-
-    这避免"规则层拦下来了但评测 yaml 写得有点瑕疵" 误入 downstream/bypass 栏——
-    intent=injection 本身是 agent.core 里 guardrails 短路才会打的硬标签。"""
+    """Injection intent always counts as a guardrail block, even if another assertion failed; this label is set by the agent guardrail short circuit."""
     r = _make_result("rt-rh-01", intent_observed="injection", passed=False)
     assert classify_verdict(r) == "guardrails_block"
 
@@ -61,11 +55,11 @@ def test_classify_bypassed_when_not_passed_non_injection():
 
 
 def test_aggregate_ignores_samples_without_family():
-    """没打 attack_family 的样本（比如跨 scenario 复用报告）不入红队表。"""
+    """Exclude samples without attack_family, including reused mixed-scenario reports."""
     family_map = {"rt-rh-01": "role_hijack"}
     results = [
         _make_result("rt-rh-01", intent_observed="injection", passed=True),
-        _make_result("refund-01", intent_observed="refund_request", passed=True),  # 非红队
+        _make_result("refund-01", intent_observed="refund_request", passed=True),  # Not a red-team sample
     ]
     buckets = aggregate_by_family(results, family_map)
     assert buckets["_overall"].total == 1
@@ -108,7 +102,7 @@ def test_aggregate_overall_sums_across_families():
 
 
 def test_family_agg_empty_intercept_rate_zero():
-    """空族的 intercept_rate 不能除零。"""
+    """An empty family must not divide by zero when computing intercept_rate."""
     agg = FamilyAgg(family="empty")
     assert agg.intercept_rate == 0.0
 
@@ -130,8 +124,8 @@ def test_format_table_contains_headers_and_all_families():
     assert "family" in table and "intercept" in table
     assert "role_hijack" in table
     assert "privilege_escalation" in table
-    assert "OVERALL" not in table  # 用小写 _overall 的 family 名字渲染
-    # overall 行存在（通过"_overall" family 名字）
+    assert "OVERALL" not in table  # Render the lowercase _overall family name.
+    # The overall row appears under its _overall family name.
     assert "_overall" in table
 
 
@@ -143,23 +137,23 @@ def test_format_table_lists_bypassed_ids_section():
     ]
     buckets = aggregate_by_family(results, family_map)
     table = format_red_team_table(buckets)
-    assert "绕过的样本" in table
-    assert "x" in table  # bypassed id 出现
-    # y 没被绕过，但 id 出现在表体里也是可能的；重点是 bypassed 区
+    assert "Bypassed samples" in table
+    assert "x" in table  # Show the bypassed ID.
+    # y may appear elsewhere in the table; check only the bypassed section.
     lines = table.splitlines()
-    bypass_idx = next(i for i, line in enumerate(lines) if "绕过的样本" in line)
-    bypass_block = "\n".join(lines[bypass_idx:])
+    bypass_idx = next(i for i, line in enumerate(lines) if "Bypassed samples" in line)
+    bypass_block = "\n".join(lines[bypass_idx + 1:])
     assert "x" in bypass_block
     assert "y" not in bypass_block
 
 
 def test_format_table_omits_bypass_section_when_clean():
-    """全部拦住时不应该冒出空标题"绕过的样本："。"""
+    """Do not display an empty bypassed-samples heading when every attack was blocked."""
     family_map = {"x": "role_hijack"}
     results = [_make_result("x", intent_observed="injection", passed=True)]
     buckets = aggregate_by_family(results, family_map)
     table = format_red_team_table(buckets)
-    assert "绕过的样本" not in table
+    assert "Bypassed samples" not in table
 
 
 # ---------- main CLI ----------
@@ -168,16 +162,16 @@ def test_format_table_omits_bypass_section_when_clean():
 def test_main_errors_on_missing_report(tmp_path: Path, capsys):
     rc = main(["--report", str(tmp_path / "nope.json")])
     assert rc == 1
-    assert "报告不存在" in capsys.readouterr().err
+    assert "Report does not exist" in capsys.readouterr().err
 
 
 def test_main_errors_when_report_has_no_red_team_samples(tmp_path: Path, capsys):
-    """喂一份只有非红队样本的报告，应退出 1 并提示用户跑 red_team 剧本。"""
+    """A report containing only non-red-team samples exits with code 1 and suggests the red_team scenario."""
     report = tmp_path / "r.json"
     report.write_text(
         json.dumps({
             "samples": [{
-                "sample_id": "refund-01",  # 真实数据集里确实没 attack_family
+                "sample_id": "refund-01",  # The real dataset has no attack_family for this sample.
                 "intent_observed": "refund_request",
                 "passed": True,
             }]
@@ -190,7 +184,7 @@ def test_main_errors_when_report_has_no_red_team_samples(tmp_path: Path, capsys)
 
 
 def test_main_prints_table_on_real_red_team_report(tmp_path: Path, capsys):
-    """手搓一份"假装跑过"的报告（用 red_team.yaml 里真实 id）→ 应成功出表。"""
+    """A synthetic report using real red_team sample IDs should render successfully."""
     report = tmp_path / "r.json"
     report.write_text(
         json.dumps({
@@ -207,4 +201,4 @@ def test_main_prints_table_on_real_red_team_report(tmp_path: Path, capsys):
     out = capsys.readouterr().out
     assert "role_hijack" in out
     assert "privilege_escalation" in out
-    assert "rt-pe-01" in out  # 被绕过的样本要被点名
+    assert "rt-pe-01" in out  # Name the bypassed sample explicitly.

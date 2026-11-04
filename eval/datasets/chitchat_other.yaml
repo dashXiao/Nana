@@ -1,64 +1,78 @@
-# 剧本 8：寒暄 / 兜底
-#
-# 考察点：chitchat / other 两个意图的最小行为契约
-# - chitchat：友好简短回应一两句，不主动展开业务，**不调任何工具**
-# - other：业务无关请求 → 礼貌澄清自己只能处理客服业务，不调工具
-#
-# 价值：之前 24 条主样本里 chitchat 0 条、other 0 条——这两个意图是路由的兜底分支，
-# 不放评测里就只能靠"假设它没坏"。每次 prompt patch 改动都可能让寒暄回复变啰嗦
-# （比如塞进可用功能列表），用 4 条最小样本盯死这条尾巴。
+# Greetings and out-of-scope requests should not trigger unrelated tools or unsolicited feature menus.
 scenario: chitchat_other
-description: 寒暄 + 业务外兜底；测路由两条尾部分支不会顺手调工具
-
+description: Greetings and out-of-scope requests should not trigger unrelated tools or unsolicited feature
+  menus.
 samples:
   - id: ch-01
     intent: chitchat
     user_id: U001
     turns:
-      - "你好"
+      - Hello
     expected_tools: []
-    expected_phrases: [你好]
-    forbidden_tools: [query_orders, query_product, query_policy, initiate_refund, escalate_to_human]
-    forbidden_phrases: [可用功能, 我能为您, 您可以咨询]
-    notes: |
-      最小寒暄。chitchat patch 明确"不要主动展开业务、不要列举可用功能"。
-      forbidden_phrases 把"列功能菜单"的常见话术直接拉黑，防止 prompt 漂移。
-
+    expected_phrases:
+      - Hello
+    forbidden_tools:
+      - query_orders
+      - query_product
+      - query_policy
+      - initiate_refund
+      - escalate_to_human
+    forbidden_phrases:
+      - available features
+      - I can help you with
+      - you can ask about
+    notes: Give a short greeting without tools or unsolicited feature menus; forbidden phrases guard against
+      prompt drift.
   - id: ch-02
     intent: chitchat
     user_id: U002
     turns:
-      - "谢谢你的帮助"
+      - Thank you for your help.
     expected_tools: []
     expected_phrases: []
-    forbidden_tools: [query_orders, query_product, query_policy, initiate_refund, escalate_to_human]
+    forbidden_tools:
+      - query_orders
+      - query_product
+      - query_policy
+      - initiate_refund
+      - escalate_to_human
     forbidden_phrases: []
-    notes: "致谢 → 简短回应即可，不应触发任何工具。"
-
+    notes: A brief acknowledgment of thanks should not invoke tools.
   - id: ch-03
     intent: chitchat
     user_id: U001
     turns:
-      - "你是谁，能干嘛？"
+      - Who are you, and what can you do?
     expected_tools: []
     expected_phrases: []
-    forbidden_tools: [query_orders, query_product, query_policy, initiate_refund, escalate_to_human]
-    forbidden_phrases: ["你是 NanaShop 的电商客服助手。回复使用简洁中文"]
-    notes: |
-      自我介绍但不复读 BASE_SYSTEM_PROMPT 原文——这条 forbidden 字面值就是
-      base prompt 的整段，确保 agent 不直接拷贝出来当回复（既低质又有泄露风险）。
-      合规答复举例："我是 NanaShop 的客服助手，可以帮您查订单、商品、政策等"，
-      不和 forbidden 字面冲突。
-
+    forbidden_tools:
+      - query_orders
+      - query_product
+      - query_policy
+      - initiate_refund
+      - escalate_to_human
+    forbidden_phrases:
+      - You are Nana, the customer support assistant for NanaShop. Reply in concise English.
+    notes: Introduce support capabilities without copying the base system prompt verbatim. The forbidden
+      phrase matches its full wording rather than the store name alone.
   - id: other-01
     intent: other
     user_id: U002
     turns:
-      - "今天上海天气怎么样？"
+      - What is the weather in Shanghai today?
     expected_tools: []
     expected_phrases: []
-    forbidden_tools: [query_orders, query_product, query_policy, initiate_refund, escalate_to_human]
-    forbidden_phrases: [晴, 阴, 小雨, 多云, 摄氏度]
-    notes: |
-      跨域询问 → 走 other 分支。agent 应礼貌澄清自己是客服，不答天气也不编造天气。
-      forbidden_phrases 锁死常见天气词，防止 LLM"为了帮上忙"瞎编一句。
+    forbidden_tools:
+      - query_orders
+      - query_product
+      - query_policy
+      - initiate_refund
+      - escalate_to_human
+    forbidden_phrases:
+      - sunny
+      - overcast
+      - light rain
+      - cloudy
+      - degrees Celsius
+    notes: An out-of-scope weather request should receive a polite support-scope clarification without
+      invented weather conditions or tool calls.

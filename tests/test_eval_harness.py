@@ -1,8 +1,7 @@
-"""E2 harness 纯函数单测：打分 / 过滤 / 聚合 / 成本估算。
+"""Pure tests for E2 scoring, filtering, aggregation, and cost estimates.
 
-不测端到端跑 LLM——那留给 scripts/smoke_* 或显式 --run。
-本文件只覆盖 harness 里可以脱离 agent 跑的逻辑，保证评分口径稳定、
-改动 scoring 时有回归保护。
+No end-to-end model calls; live runs belong to smoke scripts or explicit --run.
+These tests protect metric definitions when scoring changes.
 """
 
 from __future__ import annotations
@@ -103,7 +102,7 @@ def test_score_tools_forbidden_clean():
 def test_score_phrases_all_found():
     sample = _make_sample(expected_phrases=("299", "50"))
     missing, hit, exp_ok, forb_ok = _score_phrases(
-        sample, "价格 299 元，库存 50 件"
+        sample, "Price: CNY 299; stock: 50 units"
     )
     assert missing == ()
     assert hit == ()
@@ -112,16 +111,16 @@ def test_score_phrases_all_found():
 
 def test_score_phrases_some_missing():
     sample = _make_sample(expected_phrases=("299", "50"))
-    missing, hit, exp_ok, _ = _score_phrases(sample, "价格 299 元")
+    missing, hit, exp_ok, _ = _score_phrases(sample, "Price: CNY 299")
     assert missing == ("50",)
     assert exp_ok is False
     assert hit == ()
 
 
 def test_score_phrases_forbidden_hit():
-    sample = _make_sample(forbidden_phrases=("mAh", "毫安"))
+    sample = _make_sample(forbidden_phrases=("mAh", "milliamp"))
     missing, hit, _, forb_ok = _score_phrases(
-        sample, "电池 3000 mAh，续航不错"
+        sample, "The battery is 3000 mAh with good battery life"
     )
     assert "mAh" in hit
     assert forb_ok is False
@@ -129,9 +128,23 @@ def test_score_phrases_forbidden_hit():
 
 def test_score_phrases_empty_both_sides_passes():
     sample = _make_sample()
-    missing, hit, exp_ok, forb_ok = _score_phrases(sample, "任何内容")
+    missing, hit, exp_ok, forb_ok = _score_phrases(sample, "Any content")
     assert missing == () and hit == ()
     assert exp_ok and forb_ok
+
+
+def test_score_phrases_ignores_english_capitalization():
+    sample = _make_sample(
+        expected_phrases=("refund",),
+        forbidden_phrases=("PASSWORD",),
+    )
+    missing, hit, expected_ok, forbidden_ok = _score_phrases(
+        sample, "Refund issued. The password is secret."
+    )
+    assert missing == ()
+    assert hit == ("PASSWORD",)
+    assert expected_ok is True
+    assert forbidden_ok is False
 
 
 # ---------- score_run ----------
@@ -146,7 +159,7 @@ def test_score_run_all_green():
         sample=sample,
         observed_intent="refund_request",
         observed_tools=("query_product",),
-        final_answer="售价 299",
+        final_answer="Price: 299",
         latency_s=1.23,
         tokens_by_model={MODEL: TokenUsage(100, 50, 150)},
         turns_count=1,
@@ -156,7 +169,7 @@ def test_score_run_all_green():
     assert r.tools_ordered_ok is True
     assert r.phrases_expected_ok is True
     assert r.latency_s == 1.23
-    # tokens 应做深拷贝，不与外部同一对象
+    # Copy token usage deeply so results do not share mutable usage objects.
     assert r.tokens_by_model[MODEL].total == 150
 
 
@@ -290,8 +303,7 @@ def test_format_table_contains_scenarios_and_overall():
 
 
 def test_estimate_cost_sums_per_model():
-    """成本 = Σ (prompt * input_price + completion * output_price) / 1M。
-    价格走 .env（_PRICING_PER_1M），所以测试也按当前配置取价 + 算期望。"""
+    """Cost sums input and output tokens times configured prices per million tokens; derive expectations from the current pricing map."""
     main_in, main_out = _PRICING_PER_1M[MODEL]
     light_in, light_out = _PRICING_PER_1M[LIGHT_MODEL]
     tokens = {
@@ -307,7 +319,7 @@ def test_estimate_cost_sums_per_model():
 
 
 def test_estimate_cost_ignores_unknown_model():
-    """未在 _PRICING_PER_1M 中登记的模型名应被忽略（cost=0），不抛错。"""
+    """Unknown models contribute zero cost without raising errors."""
     tokens = {"unknown-model-xyz": TokenUsage(1_000, 500, 1_500)}
     assert _estimate_cost(tokens) == 0.0
 

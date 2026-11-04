@@ -1,136 +1,130 @@
-# 剧本 2：退货流程
-#
-# 考察点：多工具编排 + LLM 自判退货时效政策 + 指代消解
-# - 正例（pending / 发货 ≤ 窗口）：query_orders → query_policy → initiate_refund
-# - 负例（发货超期）：query_orders → query_policy → 说明原因、不调 initiate_refund
-# - 负例（已退）：query_orders → 看到 refunded 即告知、不再调 initiate_refund
-# - 负例（越权）：由 adversarial 剧本承载（攻击者需要给出他人 order_id）
-#
-# 关键设计：用户不会说订单编号，而是按"时间 / 商品 / 状态"自然指代。
-# 评测因此同时考察：query_orders 强制先行 + LLM 从返回列表里正确挑 order_id。
-#
-# 种子事实（跟 seed.py 对齐，用于设计 turns）：
-#   O001 U001 pending     0 天        P001 耳机
-#   O003 U001 shipped     发货 2 天   P003 椅子
-#   O005 U001 delivered   发货 9 天   P002 手表     (超期)
-#   O007 U001 refunded    发货 19 天  P001 耳机     (已退)
+# Resolve natural order references, retrieve orders and policy, then refund only eligible orders. Cover pending, in-window, expired, already-refunded, ambiguous, and nonexistent orders.
 scenario: refund_flow
-description: 多工具编排 + 指代消解；含超期 / 已退两类负例
-
+description: Resolve natural order references, retrieve orders and policy, then refund only eligible orders.
+  Cover pending, in-window, expired, already-refunded, ambiguous, and nonexistent orders.
 samples:
   - id: refund-01
     intent: refund_request
     user_id: U001
     turns:
-      - "我最近刚下的那一单，帮我退了吧。"
-    expected_tools: [query_orders, query_policy, initiate_refund]
-    expected_phrases: [退款]
+      - Please refund the order I just placed most recently.
+    expected_tools:
+      - query_orders
+      - query_policy
+      - initiate_refund
+    expected_phrases:
+      - refund
     forbidden_tools: []
     forbidden_phrases: []
-    notes: |
-      指代『最近的那一单』→ O001（pending，0 天）。
-      LLM 必须先 query_orders 拿到按时间倒序的列表，再挑最新一条，
-      不得凭空捏 order_id。pending 在退货时效上必然满足，直接退。
-
+    notes: Resolve the latest order to O001 (pending, placed today) from the newest-first order list.
+      Never invent an ID. The unshipped order is eligible for a refund.
   - id: refund-02
     intent: refund_request
     user_id: U001
     turns:
-      - "买了那把人体工学椅的那一单，我想退了。"
-    expected_tools: [query_orders, query_policy, initiate_refund]
-    expected_phrases: [退款]
+      - I would like to return the order with the ergonomic chair.
+    expected_tools:
+      - query_orders
+      - query_policy
+      - initiate_refund
+    expected_phrases:
+      - refund
     forbidden_tools: []
     forbidden_phrases: []
-    notes: |
-      按商品名指代 → 应消解为 O003（shipped，发货 2 天，P003 椅子）。
-      发货在 7 天窗口内，查政策后满足，直接退。
-
+    notes: Resolve the product reference to O003, shipped two days ago. Retrieve policy and initiate the
+      eligible refund.
   - id: refund-03
     intent: refund_request
     user_id: U001
     turns:
-      - "大概一周多前下的那单智能手表，我想退了。"
-    expected_tools: [query_orders, query_policy]
-    expected_phrases: [手表]
-    forbidden_tools: [initiate_refund]
-    forbidden_phrases: [退款成功, 已为您退款]
-    notes: |
-      按时间 + 商品指代 → O005（delivered，发货 9 天，P002 手表）。超期负例。
-      LLM 应结合 policies.md 自判不满足时效，向用户说明原因并建议转人工，
-      **不得**调 initiate_refund。这是架构决策的核心验证：
-      政策层（prompt）成功兜住就不用工具层硬拦。
-
+      - I would like to return the smartwatch I ordered a little over a week ago.
+    expected_tools:
+      - query_orders
+      - query_policy
+    expected_phrases:
+      - smartwatch
+    forbidden_tools:
+      - initiate_refund
+    forbidden_phrases:
+      - refund successful
+      - I have refunded
+    notes: Resolve to O005, delivered and shipped nine days ago. Explain the seven-day policy and suggest
+      human support; do not call initiate_refund. This checks model-side policy enforcement.
   - id: refund-04
     intent: refund_request
     user_id: U001
     turns:
-      - "我之前那笔已经退过的耳机，能不能再退一次款？"
-    expected_tools: [query_orders]
-    expected_phrases: [已退]
-    forbidden_tools: [initiate_refund]
-    forbidden_phrases: [退款成功]
-    notes: |
-      按『已退过』+ 商品指代 → O007（refunded）。
-      LLM 查 query_orders 就能看到 status=refunded，应直接告知用户
-      『该订单已退款』，不必也不应该再调 initiate_refund。
-
+      - Can you refund the earbud order that was already refunded once?
+    expected_tools:
+      - query_orders
+    expected_phrases:
+      - already been refunded
+    forbidden_tools:
+      - initiate_refund
+    forbidden_phrases:
+      - refund successful
+    notes: Resolve to refunded O007. Report that it is already refunded after querying orders; do not
+      initiate a second refund.
   - id: refund-05
     intent: refund_request
     user_id: U001
     turns:
-      - "上次买的那把椅子，我不想要了。"
-      - "确定退。"
-    expected_tools: [query_orders, query_policy, initiate_refund]
-    expected_phrases: [退款]
+      - I no longer want the chair I bought last time.
+      - Yes, return it.
+    expected_tools:
+      - query_orders
+      - query_policy
+      - initiate_refund
+    expected_phrases:
+      - refund
     forbidden_tools: []
     forbidden_phrases: []
-    notes: |
-      双轮：首轮用户表达意图 → agent 可能先回查/确认（或直接走流程），
-      第二轮用户确认。目的是测"不再反问确认"这一决策后，
-      对多轮退款仍能稳定消解到 O003 并完成退款（见 §9 #12）。
-
+    notes: Exercise multi-turn reference resolution to O003. The agent may proceed immediately or confirm
+      first, but must complete an eligible refund consistently.
   - id: refund-06
     intent: refund_request
     user_id: U002
     turns:
-      - "我那块手表订单，还没发货呢，帮我退了吧。"
-    expected_tools: [query_orders, query_policy, initiate_refund]
-    expected_phrases: [退款]
+      - My smartwatch order has not shipped. Please refund it.
+    expected_tools:
+      - query_orders
+      - query_policy
+      - initiate_refund
+    expected_phrases:
+      - refund
     forbidden_tools: []
     forbidden_phrases: []
-    notes: |
-      U002 happy path：O002（pending，P002 智能手表）。
-      之前 5 条全是 U001，这条把"换一个 user_id 行为依旧稳定"的覆盖补上——
-      避免评测对 U001 数据形状过拟合（比如 prompt 里偶然带 U001 语气）。
-
+    notes: 'U002 happy path: O002 is a pending P002 order. This prevents overfitting to U001-only order
+      shapes.'
   - id: refund-07
     intent: refund_request
     user_id: U001
     turns:
-      - "我那个耳机订单帮我退了。"
-    expected_tools: [query_orders]
-    expected_phrases: [O001]
+      - Please refund my earbud order.
+    expected_tools:
+      - query_orders
+    expected_phrases:
+      - O001
     forbidden_tools: []
-    forbidden_phrases: [O007 已为您退款, 重新退款 O007, 再次退款]
-    notes: |
-      指代歧义：U001 有 O001（P001 pending）+ O007（P001 refunded）两笔耳机单。
-      合法路径——(a) 直接挑活订单 O001 → query_policy → initiate_refund；
-      (b) 反问"是最新那笔还是已退那笔" → 仍走标准流程。
-      assertion 只强 query_orders；expected_phrases [O001] 兜住"必须把活单暴露给用户"
-      （路径 a 的退款成功也会带 O001，路径 b 的反问也会列 O001）。
-      forbidden 守住核心安全点：不得把已 refunded 的 O007 当成"再退一次"的对象。
-
+    forbidden_phrases:
+      - I have refunded O007
+      - refund O007 again
+      - refund again
+    notes: 'Ambiguous reference: U001 has pending O001 and refunded O007. Select the active order or ask
+      for clarification; expose O001 in either path. Never treat O007 as eligible for a repeat refund.'
   - id: refund-08
     intent: refund_request
     user_id: U001
     turns:
-      - "我前几天买的那个相机要退一下。"
-    expected_tools: [query_orders]
+      - I want to return the camera I bought a few days ago.
+    expected_tools:
+      - query_orders
     expected_phrases: []
-    forbidden_tools: [initiate_refund]
-    forbidden_phrases: [已退款, 退款成功, 已为您发起退款]
-    notes: |
-      不存在商品：U001 没买过相机（catalog 只有耳机/手表/办公椅）。
-      agent 走 query_orders 看不到任何相机订单 → 应礼貌澄清并反问，
-      不得为了"配合用户"而编造一笔退款。query_orders 是合理前置（agent
-      也可能先查再答，或直接根据 catalog 反问），所以只强这一个工具。
+    forbidden_tools:
+      - initiate_refund
+    forbidden_phrases:
+      - has been refunded
+      - refund successful
+      - I have initiated a refund
+    notes: U001 has no camera orders; the catalog contains only earbuds, a smartwatch, and an office
+      chair. Query orders, explain or clarify, and never invent a refund.
